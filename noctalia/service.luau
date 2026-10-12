@@ -70,6 +70,11 @@ local function details(args): string
   return table.concat(parts, ", ")
 end
 
+-- The assistant's name is a setting, and comes from the daemon.
+local function who(): string
+  return noctalia.state.get("name") or "Morgan"
+end
+
 local function show(want: boolean)
   -- The chat window has its own waveform; two of them at once is one too many.
   if want and noctalia.state.get("chat_open") then
@@ -97,6 +102,10 @@ local function onLine(line: string)
     table.insert(levels, event.value)
     noctalia.state.set("levels", levels)
   elseif event.type == "state" then
+    -- The first line of the stream carries the assistant's name.
+    if event.name then
+      noctalia.state.set("name", event.name)
+    end
     noctalia.state.set("state", event.state)
     if event.state == "idle" then
       idleSince = noctalia.nowMs()
@@ -113,7 +122,7 @@ local function onLine(line: string)
     if event.cancelled then
       noctalia.state.set("enroll", { active = false, outcome = "Nothing was heard for a while, so it was abandoned. Nothing has changed." })
     elseif (event.count or 0) >= (event.want or 6) then
-      noctalia.state.set("enroll", { active = false, outcome = `{event.name}'s voice is taught. Morgan now answers only to voices it has been taught.` })
+      noctalia.state.set("enroll", { active = false, outcome = `{event.name}'s voice is taught. {who()} now answers only to voices it has been taught.` })
     else
       noctalia.state.set("enroll", { active = true, count = event.count or 0, name = event.name })
     end

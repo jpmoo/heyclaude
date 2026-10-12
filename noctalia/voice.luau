@@ -19,13 +19,18 @@ local function role(name: string): string
   return accent or name
 end
 
+-- The assistant's name is a setting, and comes from the daemon.
+local function who(): string
+  return noctalia.state.get("name") or "Morgan"
+end
+
 local LOOK = {
   listening = { glyph = "microphone", title = "Listening", color = role("secondary") },
   transcribing = { glyph = "ear", title = "Listening", color = role("secondary") },
   thinking = { glyph = "brain", title = "Thinking", color = role("primary") },
   consulting = { glyph = "eye", title = "Consulting the Oracle", color = role("tertiary") },
-  speaking = { glyph = "volume", title = "Morgan", color = role("primary") },
-  idle = { glyph = "microphone", title = "Morgan", color = accent or "on_surface_variant" },
+  speaking = { glyph = "volume", title = "", color = role("primary") },
+  idle = { glyph = "microphone", title = "", color = accent or "on_surface_variant" },
 }
 
 local MAX = 44 -- tallest bar, px
@@ -47,7 +52,7 @@ local function render()
   panel.render(ui.column({ padding = 12, gap = 8 }, {
     ui.row({ gap = 8, align = "center", fill = tint(look.color, 0.16), radius = 10, paddingH = 10, paddingV = 4 }, {
       ui.glyph({ name = look.glyph, size = 18, color = look.color }),
-      ui.label({ text = look.title, color = look.color, fontSize = 12, fontWeight = "bold" }),
+      ui.label({ text = if look.title == "" then who() else look.title, color = look.color, fontSize = 12, fontWeight = "bold" }),
       ui.spacer({ flexGrow = 1 }),
       ui.button({
         glyph = "keyboard",
@@ -73,6 +78,7 @@ local function render()
 end
 
 noctalia.state.watch("state", render)
+noctalia.state.watch("name", render)
 noctalia.state.watch("levels", render)
 noctalia.state.watch("caption", render)
 

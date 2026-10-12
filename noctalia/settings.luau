@@ -16,6 +16,11 @@ local function tint(color: string, alpha: number): string
   return `{color}/{alpha}`
 end
 
+-- The assistant's name is a setting, and comes from the daemon.
+local function who(): string
+  return noctalia.state.get("name") or "Morgan"
+end
+
 local WIDTH = 900 - 2 * 16
 local TABS = {
   { id = "memory", label = "Memory", glyph = "brain" },
@@ -43,7 +48,7 @@ local function call(op: string, args, done)
   noctalia.runAsync({ heyclaude, "admin", noctalia.json.encode({ op = op, args = args or {} }) }, function(result)
     local answer = noctalia.json.decode(result.stdout or "")
     if type(answer) ~= "table" then
-      answer = { ok = false, error = "Morgan is not running" }
+      answer = { ok = false, error = `{who()} is not running` }
     end
     if done then
       done(answer)
@@ -58,7 +63,7 @@ local function change(op: string, args, said: string?)
     if not answer.ok then
       status = `That did not work: {answer.error}`
     elseif answer.restart then
-      status = "Saved. Morgan is restarting to take it up…"
+      status = `Saved. {who()} is restarting to take it up…`
       settle = 6
     else
       status = said or "Saved."
@@ -346,7 +351,7 @@ local function memoryTab()
     end
   end
   if #documents == 0 then
-    table.insert(documents, hint("None. Ask Morgan to remember a file, attached in the chat window or in a folder it may read."))
+    table.insert(documents, hint(`None. Ask {who()} to remember a file, attached in the chat window or in a folder it may read.`))
   end
   table.insert(out, card("Documents kept in full", documents))
 
@@ -386,14 +391,19 @@ end
 
 -- ---------------------------------------------------------------- voice
 
-local PHRASES = {
-  "Hey Morgan, what's on my calendar for tomorrow afternoon?",
-  "Remind me to pick up the dry cleaning on the way home.",
-  "The quick brown fox jumps over the lazy dog by the river.",
-  "Hey Morgan, read me the first three things on my task list.",
-  "I'd like to hear the weather for the weekend, please.",
-  "Morgan, stop. Never mind, that's all for now, thanks.",
-}
+-- What to read aloud: the wake phrase and the name are the ones in use.
+local function phrases()
+  local config = D["config.get"] or {}
+  local wake = config.wakeWord or `Hey {who()}`
+  return {
+    `{wake}, what's on my calendar for tomorrow afternoon?`,
+    "Remind me to pick up the dry cleaning on the way home.",
+    "The quick brown fox jumps over the lazy dog by the river.",
+    `{wake}, read me the first three things on my task list.`,
+    "I'd like to hear the weather for the weekend, please.",
+    `{who()}, stop. Never mind, that's all for now, thanks.`,
+  }
+end
 
 local function kokoroName(voice: string): string
   local kind, who = voice:match("^(%a%a)_(.+)$")
@@ -417,7 +427,7 @@ local function voiceTab()
       set({ engine = "piper" })
     end),
   }
-  table.insert(out, card("How Morgan speaks", { ui.row({ gap = 6 }, engines), hint("Click a voice below to hear it, then “Use it”.") }))
+  table.insert(out, card(`How {who()} speaks`, { ui.row({ gap = 6 }, engines), hint("Click a voice below to hear it, then “Use it”.") }))
 
   if voice.kokoroInstalled then
     local picked = view.kokoro or voice.kokoroVoice
@@ -476,14 +486,14 @@ local function voiceTab()
     }))
   end
   if #taught == 0 then
-    table.insert(taught, hint("No voice has been taught, so Morgan answers anyone."))
+    table.insert(taught, hint(`No voice has been taught, so {who()} answers anyone.`))
   end
 
   local teaching = noctalia.state.get("enroll")
   local lesson = {}
   if type(teaching) == "table" and teaching.active then
     table.insert(lesson, hint("Read each line aloud at your usual distance, pausing after each until it is ticked."))
-    for index, phrase in ipairs(PHRASES) do
+    for index, phrase in ipairs(phrases()) do
       local done = index <= (teaching.count or 0)
       table.insert(lesson, ui.row({ gap = 8, align = "center" }, {
         ui.glyph({ name = if done then "circle-check" else "circle", size = 16, color = if done then accent else "on_surface_variant" }),
@@ -526,10 +536,10 @@ local function voiceTab()
     end
   end
   if #checks == 0 then
-    table.insert(checks, hint("No checks yet. Each time Morgan hears speech it could act on, the score appears here."))
+    table.insert(checks, hint(`No checks yet. Each time {who()} hears speech it could act on, the score appears here.`))
   end
 
-  table.insert(out, card("Voices Morgan answers to", {
+  table.insert(out, card(`Voices {who()} answers to`, {
     ui.column({ gap = 4 }, taught),
     ui.separator({ color = "outline/0.3" }),
     ui.column({ gap = 6 }, lesson),
@@ -566,7 +576,7 @@ local function listeningTab()
 
   return {
     card("Who is who", {
-      field("name", "The assistant's name", config.name, "Morgan", function(text)
+      field("name", "The assistant's name", config.name, `{who()}`, function(text)
         set({ name = text })
       end),
       field("userName", "Your name", config.userName, "What it calls you", function(text)
@@ -594,7 +604,7 @@ local function listeningTab()
         set({ endSilenceMs = now })
       end),
     }),
-    card("What Morgan may look at, when asked", {
+    card(`What {who()} may look at, when asked`, {
       switch("sight:screen", "The screen", sight.screen == true, function(on)
         look("screen", on)
       end),
@@ -634,17 +644,17 @@ local function filesTab()
     table.insert(list, ui.row({ key = `f:{folder}`, gap = 6, align = "center" }, {
       ui.glyph({ name = "folder", size = 16, color = accent }),
       ui.label({ text = folder, color = "on_surface", fontSize = 12, flexGrow = 1 }),
-      remove(`unfolder:{folder}`, "Stop Morgan reading this folder", function()
+      remove(`unfolder:{folder}`, `Stop {who()} reading this folder`, function()
         set({ folders = without(folder) }, "Folder removed.")
       end),
     }))
   end
   if #list == 0 then
-    table.insert(list, hint("None. Morgan can still read a file you attach in the chat window."))
+    table.insert(list, hint(`None. {who()} can still read a file you attach in the chat window.`))
   end
 
   return {
-    card("Folders Morgan may read", {
+    card(`Folders {who()} may read`, {
       ui.column({ gap = 4 }, list),
       ui.row({ gap = 8, align = "center" }, {
         ui.input({
@@ -656,7 +666,7 @@ local function filesTab()
           end,
         }),
         ui.button({ text = "Browse…", variant = "secondary", controlSize = "sm", onClick = function()
-          noctalia.runAsync({ "zenity", "--file-selection", "--directory", "--title=A folder Morgan may read" }, function(result)
+          noctalia.runAsync({ "zenity", "--file-selection", "--directory", `--title=A folder {who()} may read` }, function(result)
             local picked = (result.stdout or ""):gsub("%s+$", "")
             if picked ~= "" then
               set({ folders = with(picked) }, "Folder added.")
@@ -749,7 +759,7 @@ local function connectionsTab()
       table.insert(body, hint(`Not connected: {server.error or "no answer"}`))
     end
     if open then
-      table.insert(body, switch(`all:{server.name}`, "Give Morgan every tool unless switched off below", server.allow == "all", function(on)
+      table.insert(body, switch(`all:{server.name}`, `Give {who()} every tool unless switched off below`, server.allow == "all", function(on)
         change("mcp.allow", { name = server.name, allow = if on then "all" else "read" })
       end))
       table.insert(body, hint("A tool that changes something always waits for your yes before it runs."))
@@ -824,7 +834,7 @@ render = function()
     end
   end
   if not ready then
-    body = { hint("Asking Morgan…") }
+    body = { hint(`Asking {who()}…`) }
   elseif tab == "memory" then
     body = memoryTab()
   elseif tab == "voice" then
@@ -840,7 +850,7 @@ render = function()
   panel.render(ui.column({ padding = 16, gap = 10, height = 740 }, {
     ui.row({ gap = 10, align = "center", fill = tint(accent, 0.14), radius = 12, paddingH = 12, paddingV = 6 }, {
       ui.glyph({ name = "settings", size = 20, color = accent }),
-      ui.label({ text = "Morgan settings", color = "on_surface", fontSize = 13, fontWeight = "bold" }),
+      ui.label({ text = `{who()} settings`, color = "on_surface", fontSize = 13, fontWeight = "bold" }),
       ui.label({ text = status, color = accent, fontSize = 12, maxLines = 1, maxWidth = 460 }),
       ui.spacer({ flexGrow = 1 }),
       ui.button({ glyph = "message-circle", variant = "ghost", controlSize = "sm", tooltip = "Back to the chat window", onClick = function()
@@ -861,7 +871,7 @@ function update()
   if settle > 0 then
     settle -= 1
     if settle == 0 then
-      status = "Morgan is back."
+      status = `{who()} is back.`
       refresh()
     end
   end

@@ -23,13 +23,18 @@ local function role(name: string): string
   return accent or name
 end
 
+-- The assistant's name is a setting, and comes from the daemon.
+local function who(): string
+  return noctalia.state.get("name") or "Morgan"
+end
+
 local LOOK = {
   listening = { glyph = "microphone", title = "Listening", color = role("secondary") },
   transcribing = { glyph = "ear", title = "Listening", color = role("secondary") },
   thinking = { glyph = "brain", title = "Thinking", color = role("primary") },
   consulting = { glyph = "eye", title = "Consulting the Oracle", color = role("tertiary") },
   speaking = { glyph = "volume", title = "Speaking", color = role("primary") },
-  idle = { glyph = "message-circle", title = "Morgan", color = accent or "on_surface_variant" },
+  idle = { glyph = "message-circle", title = "", color = accent or "on_surface_variant" },
 }
 
 local WIDTH = 640 - 2 * 16 -- the panel's width, less its padding
@@ -156,7 +161,7 @@ render = function()
       }, {
         ui.row({ gap = 2, align = "center" }, {
           ui.label({
-            text = if mine then "You" elseif oracle then "The Oracle, to Morgan" else "Morgan",
+            text = if mine then "You" elseif oracle then `The Oracle, to {who()}` else `{who()}`,
             color = if mine then role("primary") elseif oracle then "tertiary" else role("secondary"),
             fontSize = 10,
             fontWeight = "bold",
@@ -192,14 +197,14 @@ render = function()
   local partial = noctalia.state.get("partial") or ""
   if partial ~= "" then
     table.insert(lines, ui.column({ key = "partial", gap = 2, padding = 10, radius = 10, fill = "surface_variant/0.75", border = tint(role("primary"), 0.5), borderWidth = 1 }, {
-      ui.label({ text = "Morgan", color = role("secondary"), fontSize = 10, fontWeight = "bold" }),
+      ui.label({ text = `{who()}`, color = role("secondary"), fontSize = 10, fontWeight = "bold" }),
       ui.markdown({ text = partial, width = WIDTH - 66 }),
     }))
   end
 
   local header = ui.row({ gap = 10, align = "center", fill = tint(look.color, 0.14), radius = 12, paddingH = 12, paddingV = 6 }, {
     ui.glyph({ name = look.glyph, size = 20, color = look.color }),
-    ui.label({ text = look.title, color = "on_surface", fontSize = 13, fontWeight = "bold" }),
+    ui.label({ text = if look.title == "" then who() else look.title, color = "on_surface", fontSize = 13, fontWeight = "bold" }),
     ui.row({ gap = 2, align = "center", minHeight = 24 }, bars),
     ui.spacer({ flexGrow = 1 }),
     ui.button({
@@ -226,7 +231,7 @@ render = function()
     ui.button({ glyph = "paperclip", variant = "ghost", tooltip = "Attach files", onClick = attach }),
     ui.input({
       key = `draft{draft}`,
-      placeholder = "Type to Morgan, or press the microphone and speak",
+      placeholder = `Type to {who()}, or press the microphone and speak`,
       focus = true,
       flexGrow = 1,
       frameVisible = false,
@@ -263,6 +268,7 @@ render = function()
 end
 
 noctalia.state.watch("state", render)
+noctalia.state.watch("name", render)
 noctalia.state.watch("levels", function()
   if (noctalia.state.get("state") or "idle") ~= "idle" then
     render()

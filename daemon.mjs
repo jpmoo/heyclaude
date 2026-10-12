@@ -116,7 +116,8 @@ const defaults = {
   stt: existsSync(WHISPER)
     ? `'${WHISPER}' -m '${SPEECH}/models/ggml-base.en.bin' -f {file} -nt -np -t 6 --prompt {prompt}`
     : null,
-  sttPrompt: "Morgan, the Oracle, Hyprland, Noctalia, Hermes Notes, Talaria.",
+  // The assistant's name and the wake phrase are added to these by themselves.
+  sttPrompt: "The Oracle, Hyprland, Noctalia, Hermes Notes, Talaria.",
   // A Piper voice, by name: `heyclaude voice` lists and fetches them.
   // "kokoro" (more natural) or "piper" (lighter). Kokoro falls back to Piper
   // if it cannot be started.
@@ -152,6 +153,8 @@ const cfg = {
   ollama: { ...defaults.ollama, ...user.ollama },
   oracle: { ...defaults.oracle, ...user.oracle },
 };
+// Unless one has been chosen, the wake phrase goes with the name.
+if (!("wakeWord" in user)) cfg.wakeWord = `Hey ${cfg.name}`;
 
 // Settings that are looked at each time they are used take effect as soon as
 // the file is saved, without waiting for the settings menu to be closed and
@@ -249,10 +252,10 @@ const INTERVIEW_PROMPT = [
   "When the user wants to stop or you have covered the ground, tidy the topics, call end_interview and say goodbye.",
 ].join(" ");
 
-const ORACLE_PROMPT = [
-  "You are the Oracle. Morgan, a small local voice assistant, consults you on its user's behalf when a question is",
-  "beyond it. Each message gives the recent conversation and Morgan's question. Answer accurately and compactly in",
-  "plain prose with no markdown, lists or URLs: Morgan will relay your answer aloud in a sentence or three, so lead",
+const oraclePrompt = () => [
+  `You are the Oracle. ${cfg.name}, a small local voice assistant, consults you on its user's behalf when a question is`,
+  `beyond it. Each message gives the recent conversation and ${cfg.name}'s question. Answer accurately and compactly in`,
+  `plain prose with no markdown, lists or URLs: ${cfg.name} will relay your answer aloud in a sentence or three, so lead`,
   "with the answer and include only what matters. Say plainly when you are unsure or could not find something.",
 ].join(" ");
 
@@ -1515,7 +1518,7 @@ function startOracle() {
   const args = [
     "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
     "--model", cfg.oracle.model,
-    "--append-system-prompt", ORACLE_PROMPT,
+    "--append-system-prompt", oraclePrompt(),
     "--tools", cfg.oracle.tools.join(","),
   ];
   if (cfg.oracle.allowedTools.length) args.push("--allowedTools", cfg.oracle.allowedTools.join(","));
@@ -2043,7 +2046,7 @@ function transcribe(pcm) {
     header.writeUInt32LE(16000, 24); header.writeUInt32LE(32000, 28); header.writeUInt16LE(2, 32);
     header.writeUInt16LE(16, 34); header.write("data", 36); header.writeUInt32LE(pcm.length, 40);
     writeFileSync(file, Buffer.concat([header, pcm]));
-    const prompt = `${cfg.wakeWord ? cfg.wakeWord + ". " : ""}${cfg.sttPrompt}`.replace(/'/g, "");
+    const prompt = `${cfg.wakeWord ? cfg.wakeWord + ". " : ""}${cfg.name}. ${cfg.sttPrompt}`.replace(/'/g, "");
     const command = cfg.stt.replace("{file}", `'${file}'`).replace("{prompt}", `'${prompt}'`);
     let out = "";
     const child = spawn("sh", ["-c", command], { stdio: ["ignore", "pipe", "ignore"] });
@@ -2141,7 +2144,7 @@ function handle(line, socket) {
       });
     case "watch":
       watchers.add(socket);
-      socket.write(JSON.stringify({ type: "state", state }) + "\n");
+      socket.write(JSON.stringify({ type: "state", state, name: cfg.name }) + "\n");
       return;
     default:
       return reply({ ok: false, error: `unknown command: ${command}` });

@@ -491,7 +491,7 @@ async function namesMenu() {
     if (!choice) return;
     if (choice === "hear") {
       console.log("Names and terms you use, so they are recognised when you say them. A plain list, in any order.");
-      config.sttPrompt = await ask("Words:", config.sttPrompt ?? "Morgan, the Oracle");
+      config.sttPrompt = await ask("Words:", config.sttPrompt ?? "The Oracle");
       save();
       continue;
     }
@@ -730,14 +730,18 @@ function voicesSummary() {
   return (config.knownVoicesOnly ?? true) ? `only ${names.join(", ")}` : `anyone (taught: ${names.join(", ")})`;
 }
 
-const PHRASES = [
-  "Hey Morgan, what's on my calendar for tomorrow afternoon?",
-  "Remind me to pick up the dry cleaning on the way home.",
-  "The quick brown fox jumps over the lazy dog by the river.",
-  "Hey Morgan, read me the first three things on my task list.",
-  "I'd like to hear the weather for the weekend, please.",
-  "Morgan, stop. Never mind, that's all for now, thanks.",
-];
+const phrases = () => {
+  const name = config.name ?? BASICS.name;
+  const wake = ("wakeWord" in config ? config.wakeWord : null) ?? `Hey ${name}`;
+  return [
+    `${wake}, what's on my calendar for tomorrow afternoon?`,
+    "Remind me to pick up the dry cleaning on the way home.",
+    "The quick brown fox jumps over the lazy dog by the river.",
+    `${wake}, read me the first three things on my task list.`,
+    "I'd like to hear the weather for the weekend, please.",
+    `${name}, stop. Never mind, that's all for now, thanks.`,
+  ];
+};
 
 // Read six sentences aloud; the daemon takes each as a sample of the voice.
 async function teachVoice() {
@@ -749,7 +753,7 @@ async function teachVoice() {
   if (!started.ok) return console.log(`Could not start: ${started.error}`);
   const events = spawn(process.argv[1], ["watch"], { stdio: ["ignore", "pipe", "ignore"] });
   let count = 0;
-  console.log(`  ${dim("1.")} ${PHRASES[0]}`);
+  console.log(`  ${dim("1.")} ${phrases()[0]}`);
   const outcome = await new Promise((resolve) => {
     createInterface({ input: events.stdout }).on("line", (line) => {
       let event;
@@ -759,7 +763,7 @@ async function teachVoice() {
       if (event.count === count) return console.log(dim("     too short to use; say it again"));
       count = event.count;
       if (count >= event.want) return resolve("done");
-      console.log(`  ${dim(`${count + 1}.`)} ${PHRASES[count]}`);
+      console.log(`  ${dim(`${count + 1}.`)} ${phrases()[count]}`);
     });
     events.on("exit", () => resolve("cancelled"));
   });
@@ -801,7 +805,7 @@ async function voicesMenu() {
 
 async function listeningMenu() {
   for (;;) {
-    const wake = "wakeWord" in config ? config.wakeWord : BASICS.wakeWord;
+    const wake = "wakeWord" in config ? config.wakeWord : `Hey ${config.name ?? BASICS.name}`;
     const choice = await menu("Listening", [
       { key: "wake", label: "Wake phrase", value: wake ?? "off: the microphone opens only on heyclaude toggle" },
       { key: "off", label: wake ? "Turn the wake phrase off" : "Turn the wake phrase on" },
@@ -844,7 +848,7 @@ function finish() {
 export async function run() {
   listen();
   for (;;) {
-    const wake = "wakeWord" in config ? config.wakeWord : BASICS.wakeWord;
+    const wake = "wakeWord" in config ? config.wakeWord : `Hey ${config.name ?? BASICS.name}`;
     const choice = await menu(`heyclaude settings ${dim(CONFIG)}`, [
       { key: "assistant", label: "Assistant", value: config.name ?? BASICS.name },
       { key: "memory", label: "Memory", value: `${topicFiles().length} topics, ${documentFiles().length} documents` },
