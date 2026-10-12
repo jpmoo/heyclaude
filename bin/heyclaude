@@ -1,0 +1,105 @@
+#!/usr/bin/env node
+// heyclaude chat                                                             (typed conversation)
+// heyclaude settings                                                         (menus for everything below)
+// heyclaude toggle | say <text> | type <text> | stop | new | interview | status | watch
+// heyclaude voice [name]                                                     (list voices, or switch to one)
+// heyclaude login | logout | account                                         (the Oracle's Claude login)
+import { spawnSync } from "node:child_process";
+import { existsSync, readdirSync } from "node:fs";
+import { connect } from "node:net";
+import { join } from "node:path";
+import { createInterface } from "node:readline";
+import { BASICS, VOICES, fetchVoice, loadConfig, oracleEnv, restartDaemon, saveConfig } from "../lib.mjs";
+
+const args = process.argv.slice(2);
+const ORACLE = { login: ["auth", "login", "--claudeai"], logout: ["auth", "logout"], account: ["auth", "status", "--text"] };
+
+if (!args.length || ["help", "-h", "--help"].includes(args[0])) {
+  console.error([
+    "heyclaude settings              menus: Ollama, the Oracle's login, voices, MCP servers, listening",
+    "heyclaude chat                  a typed conversation",
+    "heyclaude toggle                start listening, or send what has been said",
+    "heyclaude say|type <text>       a turn answered aloud | in text only",
+    "heyclaude stop | new            cut the answer off | start a fresh conversation",
+    "heyclaude interview             the orientation interview",
+    "heyclaude voice [name]          list voices | switch to one",
+    "heyclaude login|logout|account  the Oracle's Claude login",
+    "heyclaude status | watch        the daemon's state | its event stream",
+  ].join("\n"));
+  process.exit(args.length ? 0 : 2);
+}
+
+if (args[0] === "settings") {
+  await (await import("../settings.mjs")).run();
+  process.exit(0);
+}
+
+if (ORACLE[args[0]]) {
+  const result = spawnSync("claude", [...ORACLE[args[0]], ...args.slice(1)], { env: oracleEnv(), stdio: "inherit" });
+  process.exit(result.status ?? 1);
+}
+
+if (args[0] === "voice") {
+  const config = loadConfig();
+  const name = args[1];
+  if (!name) {
+    const current = config.voice ?? BASICS.voice;
+    const installed = existsSync(VOICES) ? readdirSync(VOICES).filter((file) => file.endsWith(".onnx")).sort() : [];
+    for (const file of installed) console.log(`${file.slice(0, -5) === current ? "*" : " "} ${file.slice(0, -5)}`);
+    console.log("\nHear them all at https://rhasspy.github.io/piper-samples/ then: heyclaude voice <name>");
+    process.exit(0);
+  }
+  const problem = fetchVoice(name);
+  if (problem) {
+    console.error(`heyclaude: ${problem}`);
+    process.exit(1);
+  }
+  saveConfig({ ...config, voice: name });
+  restartDaemon();
+  spawnSync("sleep", ["1.5"]);
+  args.splice(0, args.length, "speak", "Hello, this is how I sound now.");
+}
+
+const SOCKET = join(process.env.XDG_RUNTIME_DIR ?? "/tmp", "heyclaude.sock");
+
+function open(command) {
+  const socket = connect(SOCKET);
+  socket.on("error", (error) => {
+    console.error(`heyclaude: daemon not reachable (${error.code})`);
+    process.exit(1);
+  });
+  socket.on("connect", () => socket.write(command + "\n"));
+  return socket;
+}
+
+if (args[0] === "chat") {
+  // A typed conversation in the terminal. Spoken turns show up here too.
+  const input = createInterface({ input: process.stdin, output: process.stdout, prompt: "> " });
+  const show = (text) => { process.stdout.write(`\r\x1b[K${text}\n`); input.prompt(true); };
+  const dim = (text) => `\x1b[2m${text}\x1b[0m`;
+  let waiting = false;
+  createInterface({ input: open("watch") }).on("line", (line) => {
+    const event = JSON.parse(line);
+    if (event.type === "user" && !waiting) show(`> ${event.text}`);
+    else if (event.type === "assistant") show(event.text);
+    else if (event.type === "consult") show(dim(`consulting the Oracle: ${event.question}`));
+    else if (event.type === "tool") show(dim(`using ${event.name}${event.args && Object.keys(event.args).length ? ` ${JSON.stringify(event.args)}` : ""}`));
+    else if (event.type === "oracle") show(dim(`the Oracle answered: ${event.text}`));
+    else if (event.type === "look") show(dim(`looking at the ${event.source}`));
+    else if (event.type === "confirm") show(dim(event.done === undefined ? `proposed ${event.name} ${JSON.stringify(event.args ?? {})}` : event.done ? `carried out ${event.name}` : `dropped ${event.name}`));
+    else if (event.type === "memory") show(dim(event.rewritten ? `reorganized ${event.topic}` : `remembered under ${event.topic}: ${event.note}`));
+    else if (event.type === "recall") show(dim(`recalling ${event.topic}`));
+    else if (event.type === "error") show(`error: ${event.message}`);
+    else if (event.type === "state" && event.state === "idle") waiting = false;
+  });
+  input.prompt();
+  input.on("line", (line) => {
+    const text = line.trim();
+    if (text === "/new" || text === "/interview" || text === "/stop") open(text.slice(1)).resume();
+    else if (text) { waiting = true; open(`type ${text}`).resume(); }
+    input.prompt();
+  });
+  input.on("close", () => process.exit(0));
+} else {
+  open(args.join(" ")).pipe(process.stdout);
+}

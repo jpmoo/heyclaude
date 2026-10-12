@@ -1,0 +1,38 @@
+id = "jpmoo/morgan"
+name = "Morgan"
+version = "0.1.0"
+plugin_api = 32
+author = "jpmoo"
+license = "MIT"
+icon = "microphone"
+description = "A face for the heyclaude voice assistant: a waveform that pops up while Morgan listens, thinks and speaks."
+tags = ["voice", "assistant"]
+dependencies = ["heyclaude"]
+
+[[service]]
+id = "link"
+entry = "service.luau"
+
+[[widget]]
+id = "morgan"
+entry = "widget.luau"
+
+[[panel]]
+id = "voice"
+entry = "voice.luau"
+width = 420
+height = 164
+position = "bottom_center"
+layer = "overlay"
+persistent = true
+dismiss_on_outside_click = false
+keyboard_focus = "none"
+
+[[panel]]
+id = "chat"
+entry = "chat.luau"
+width = 640
+height = 720
+placement = "floating"
+position = "center"
+keyboard_focus = "exclusive"

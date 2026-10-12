@@ -1,0 +1,1696 @@
+#!/usr/bin/env node
+// heyclaude daemon: microphone -> speech-to-text -> Morgan -> text-to-speech.
+//
+// Morgan is a local model served by Ollama and answers everything it can.
+// When a question is beyond it, Morgan calls consult_oracle, which asks Claude
+// (one long-lived `claude -p` process on its own login) and hands the answer
+// back for Morgan to relay. A Unix socket takes commands (toggle, say, stop,
+// new, status, watch) and streams events.
+
+import { execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
+import { connect, createServer } from "node:net";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { McpClient } from "./mcp.mjs";
+import { BASICS, KOKORO, KOKORO_VOICES, readOnly, readSealed, toolAllowed, writeSealed } from "./lib.mjs";
+import { fileURLToPath } from "node:url";
+import { Transcript, describe } from "./history.mjs";
+import * as wake from "./wake.mjs";
+
+const HOME = homedir();
+const CONFIG_HOME = join(HOME, ".config", "heyclaude");
+const RUNTIME = process.env.XDG_RUNTIME_DIR ?? "/tmp";
+const SOCKET = join(RUNTIME, "heyclaude.sock");
+const WORKDIR = join(HOME, ".local", "share", "heyclaude", "work");
+const MEMORY = process.env.HEYCLAUDE_MEMORY ?? join(HOME, ".local", "share", "heyclaude", "memory");
+
+// Where install.sh puts whisper.cpp, Piper and their models.
+const SPEECH = join(HOME, ".local", "share", "heyclaude");
+const WHISPER = join(SPEECH, "whisper.cpp", "build", "bin", "whisper-cli");
+const PIPER = join(SPEECH, "piper", "piper");
+
+// At login this can start before the desktop does. Screenshots, the clipboard
+// and the hotkey all need to know which desktop session to talk to, so wait
+// for one to appear and take its details from the sockets it leaves behind.
+for (let waited = 0; waited < 90; waited += 2) {
+  process.env.WAYLAND_DISPLAY ||= readdirSync(RUNTIME).find((name) => /^wayland-\d+$/.test(name)) ?? "";
+  const hypr = join(RUNTIME, "hypr");
+  if (!process.env.HYPRLAND_INSTANCE_SIGNATURE && existsSync(hypr)) {
+    process.env.HYPRLAND_INSTANCE_SIGNATURE = readdirSync(hypr).find((name) => existsSync(join(hypr, name, ".socket2.sock"))) ?? "";
+  }
+  if (process.env.WAYLAND_DISPLAY && process.env.HYPRLAND_INSTANCE_SIGNATURE) break;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2000);
+}
+
+const defaults = {
+  name: BASICS.name,
+  style: BASICS.style,
+  ollama: { ...BASICS.ollama, think: false, keepAlive: "30m" },
+  oracle: {
+    claude: "claude",
+    model: BASICS.oracleModel,
+    // The only built-in tools the Oracle has: no shell, no file edits, no
+    // subagents. MCP tools are added by name in allowedTools; anything else
+    // that needs approval is refused, because nobody is there to approve it.
+    tools: ["WebSearch", "WebFetch"],
+    allowedTools: ["WebSearch", "WebFetch"],
+  },
+  // MCP servers Morgan can use directly, by name: { command, args, env } for a
+  // local one or { url, headers } for a remote one. "allow" is "read" (only
+  // tools the server marks read-only; the default) or "all".
+  mcpServers: {},
+  // Spoken when Morgan turns to the Oracle without saying anything first.
+  consultLine: "Let me consult the Oracle.",
+  // Shell commands. record writes raw 16 kHz mono 16-bit audio to stdout. {file}
+  // is the utterance as a wav; stt prints its transcript on stdout.
+  // {target} names the echo-cancelled microphone when there is one.
+  record: "pw-record {target} --raw --rate 16000 --channels 1 --format s16 -",
+  // Take the assistant's own voice out of what the microphone hears, so that
+  // it can be interrupted by voice without hearing itself.
+  echoCancel: true,
+  // Said while the assistant is busy, this stops it: "Morgan" cuts an answer
+  // off and waits for you; "Morgan, what about tomorrow" asks the new thing.
+  // Defaults to the assistant's name; null leaves only the key and the button.
+  interruptWord: undefined,
+  // Listening ends by itself after this much quiet following speech, gives up
+  // if nobody speaks, and never runs longer than the maximum.
+  endSilenceMs: 900,
+  noSpeechSeconds: 8,
+  maxUtteranceSeconds: 60,
+  // Said aloud, this starts a turn: "Hey Morgan, what time is it?" The
+  // microphone then stays open and speech is transcribed on this machine to
+  // look for the phrase; anything else is thrown away. null turns it off,
+  // leaving `heyclaude toggle`.
+  wakeWord: BASICS.wakeWord,
+  // How the wake word is listened for: "spotter" is a small model that hears
+  // only that; "transcribe" writes down everything said and looks for it,
+  // which costs far more in a room full of talk. The spotter falls back to
+  // transcribing when it cannot be loaded or cannot spell the phrase.
+  wakeEngine: "spotter",
+  wakeThreshold: 0.25,
+  // Spoken when the wake word is heard with nothing after it.
+  wakeReply: "Yes?",
+  // After a spoken answer, keep listening this long for a reply with no wake
+  // word needed. 0 turns it off.
+  followUpSeconds: BASICS.followUpSeconds,
+  // What may be looked at when the user asks, and the camera to use. A picture
+  // goes to the Ollama server and is then deleted; only its description is kept.
+  sight: BASICS.sight,
+  camera: "/dev/video0",
+  // {prompt} is sttPrompt: words whisper should expect, so names come out right.
+  stt: existsSync(WHISPER)
+    ? `'${WHISPER}' -m '${SPEECH}/models/ggml-base.en.bin' -f {file} -nt -np -t 6 --prompt {prompt}`
+    : null,
+  sttPrompt: "Morgan, the Oracle, Hyprland, Noctalia, Hermes Notes, Talaria.",
+  // A Piper voice, by name: `heyclaude voice` lists and fetches them.
+  // "kokoro" (more natural) or "piper" (lighter). Kokoro falls back to Piper
+  // if it cannot be started.
+  engine: BASICS.engine,
+  kokoroVoice: BASICS.kokoroVoice,
+  kokoroSpeed: 1,
+  voice: BASICS.voice,
+  // Words the voice gets wrong, each with a spelling it says right:
+  // { "Noctalia": "nock-tah-lia" }. Applied to what is spoken, not what is shown.
+  pronunciations: {},
+  // tts reads one sentence on stdin and writes it as raw 16-bit mono audio on
+  // stdout ({voice} is the voice's .onnx file); play plays that from stdin.
+  tts: existsSync(PIPER) ? `'${PIPER}' --model {voice} --output-raw` : null,
+  play: "pw-play --raw --rate {rate} --channels 1 --format s16 -",
+  // A conversation left alone this long is over: what was learned in it is
+  // filed into memory, and the next utterance starts a fresh one.
+  idleResetMinutes: 10,
+  // Every exchange is kept and embedded with this model, on the Ollama server.
+  // Earlier exchanges scoring at least recallScore against what was just said
+  // are shown to the model unasked; it can search for more.
+  embedModel: BASICS.embedModel,
+  // Opens the chat window. Set by the daemon at runtime, so no Hyprland
+  // configuration file is touched; null leaves the keyboard alone.
+  hotkey: BASICS.hotkey,
+  recallScore: 0.58,
+};
+
+const configPath = process.env.HEYCLAUDE_CONFIG ?? join(CONFIG_HOME, "config.json");
+const user = existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf8")) : {};
+const cfg = {
+  ...defaults,
+  ...user,
+  ollama: { ...defaults.ollama, ...user.ollama },
+  oracle: { ...defaults.oracle, ...user.oracle },
+};
+
+const voiceFile = join(SPEECH, "voices", `${cfg.voice}.onnx`);
+let voiceRate = 22050;
+try { voiceRate = JSON.parse(readFileSync(`${voiceFile}.json`, "utf8")).audio.sample_rate; } catch { /* Piper's usual rate */ }
+
+// The Kokoro voice runs as a helper that keeps its model loaded.
+const KOKORO_SOCKET = join(RUNTIME, "heyclaude-tts.sock");
+let kokoroHelper = null;
+let kokoroReady = false;
+
+function startKokoro() {
+  if (cfg.engine !== "kokoro" || !existsSync(join(KOKORO, "model.onnx"))) return;
+  const speaker = Math.max(0, KOKORO_VOICES.indexOf(cfg.kokoroVoice));
+  const script = join(fileURLToPath(new URL(".", import.meta.url)), "kokoro.mjs");
+  kokoroHelper = spawn("node", [script, KOKORO_SOCKET, String(speaker), String(cfg.kokoroSpeed)], { stdio: ["ignore", "ignore", "pipe"] });
+  kokoroHelper.stderr.setEncoding("utf8");
+  kokoroHelper.stderr.on("data", (text) => { if (text.includes("kokoro ready")) kokoroReady = true; });
+  kokoroHelper.on("exit", () => { kokoroReady = false; kokoroHelper = null; });
+  kokoroHelper.on("error", () => { kokoroReady = false; kokoroHelper = null; });
+}
+startKokoro();
+
+const morganPrompt = () => [
+  `You are ${cfg.name}, a voice assistant on the user's Linux desktop. Everything you write is read aloud by a speech`,
+  "synthesizer, and the user's words reach you through speech recognition, so expect misheard words and work out what",
+  "was meant.",
+  quiet
+    ? "This turn was typed, and your answer will be read on screen, not heard: use markdown where it helps (lists, bold, code blocks, links), and be as long as the question deserves, no longer."
+    : "Answer in plain spoken sentences: no markdown, lists, headings, code, emoji or URLs. Be brief, usually one to three sentences, and say more only when asked.",
+  cfg.style,
+  "Answer from your own knowledge whenever you are confident. You can also consult the Oracle, a far more capable",
+  "intelligence that can search the web. Consult it for anything current or recent, anything you are not sure of,",
+  "and anything that needs deep expertise or careful reasoning. Do not guess where the Oracle would know.",
+  "When you relay what the Oracle told you, say that it came from the Oracle, in your own words and just as briefly.",
+  "You keep a long-term memory about the user, organized into topics that you create and curate yourself. Only the",
+  "topic list is shown to you; call recall to read a topic before answering anything it might bear on. When the user",
+  "tells you something lasting about themselves, their people, work, projects, routines or preferences, save it with",
+  "remember straight away, without being asked and without making a speech about it. Keep the topics few, distinct",
+  "and tidy: use rewrite_topic to merge, split, rename, correct or delete them as you learn more. Prefer a handful of",
+  "broad topics, such as About me, People, Work, Projects and Preferences, over one topic per fact, and give each new",
+  "topic a description.",
+  mcpTools.length ? "You also have tools from the user's own services; use them when a request concerns those services." : "",
+  "When the user asks you to send, create, delete or change something in their own services, call the tool for it",
+  "straight away, with the details filled in. Do not ask permission first: calling such a tool does not carry it out,",
+  "it only puts the action forward, and you are then told to check with the user. It is carried out for you when they",
+  "say yes, and you are told the result. You cannot carry out such a thing by saying so: unless you have been told in",
+  "this turn that it was carried out, it was not, and you must not say it was. Your memory, your saved pictures and",
+  "looking need no permission.",
+  cfg.sight.length
+    ? `You can see, when asked: ${cfg.sight.map((source) => SIGHT[source].hint).join("; ")}. Look when the user points at`
+      + " something they are looking at, showing you or have copied, as in what is this, what does my screen say or what am"
+      + " I holding. Never look unasked. You see nothing at all unless you call one of these tools in the same turn: never"
+      + " describe, recognise or confirm anything from imagination, and never claim a picture is saved unless remember_picture"
+      + " said so. When the user asks you to remember what someone or something looks like, call remember_picture at once."
+      + ` Pictures you have saved for recognising people and things: ${pictures().map((picture) => picture.label).join(", ") || "none yet"}.`
+    : "",
+  "Everything you and the user have ever said to each other is also kept, word for word. Passages from earlier",
+  "conversations that look relevant are shown below when there are any. Use search_conversations to look further,",
+  "by subject, by date or both, whenever the user refers to something said before that you cannot see.",
+  `It is ${new Date().toLocaleString("en-US", { dateStyle: "full", timeStyle: "short" })}.`,
+  interviewing ? INTERVIEW_PROMPT : "",
+  seen ? `\n\n${seen}` : "",
+  recalled.length ? `\n\nFrom earlier conversations, possibly relevant:\n${recalled.map((hit) => describe(hit)).join("\n")}` : "",
+  `\n\nYour memory topics:\n${topicList()}`,
+].join(" ");
+
+const INTERVIEW_PROMPT = [
+  "You are now conducting an orientation interview to get to know the user. Ask one short question at a time and",
+  "wait for the answer. After each answer, save what you learned with remember before asking the next question.",
+  "Cover, roughly in this order and following up where an answer is interesting: who they are and what they do,",
+  "the people in their life, their current projects, their daily routines, the tools and devices they use, and how",
+  "they like to be spoken to and helped. Recall existing topics first so you do not ask what you already know.",
+  "When the user wants to stop or you have covered the ground, tidy the topics, call end_interview and say goodbye.",
+].join(" ");
+
+const ORACLE_PROMPT = [
+  "You are the Oracle. Morgan, a small local voice assistant, consults you on its user's behalf when a question is",
+  "beyond it. Each message gives the recent conversation and Morgan's question. Answer accurately and compactly in",
+  "plain prose with no markdown, lists or URLs: Morgan will relay your answer aloud in a sentence or three, so lead",
+  "with the answer and include only what matters. Say plainly when you are unsure or could not find something.",
+].join(" ");
+
+const MORGAN_TOOLS = [{
+  type: "function",
+  function: {
+    name: "consult_oracle",
+    description: "Ask the Oracle, a far more capable intelligence with web access. Use it for current or recent "
+      + "information, for anything you are unsure of, and for questions needing deep expertise or careful reasoning.",
+    parameters: {
+      type: "object",
+      properties: { question: { type: "string", description: "The full question, understandable on its own" } },
+      required: ["question"],
+    },
+  },
+}, {
+  type: "function",
+  function: {
+    name: "recall",
+    description: "Read everything saved under one memory topic.",
+    parameters: {
+      type: "object",
+      properties: { topic: { type: "string", description: "A topic name from your memory topics list" } },
+      required: ["topic"],
+    },
+  },
+}, {
+  type: "function",
+  function: {
+    name: "remember",
+    description: "Add one note to a memory topic, creating the topic if it is new.",
+    parameters: {
+      type: "object",
+      properties: {
+        topic: { type: "string", description: "An existing topic name, or a short name for a new one" },
+        note: { type: "string", description: "One self-contained fact, in a full sentence" },
+        description: { type: "string", description: "For a new topic: one line saying what belongs in it" },
+      },
+      required: ["topic", "note"],
+    },
+  },
+}, {
+  type: "function",
+  function: {
+    name: "rewrite_topic",
+    description: "Replace a memory topic wholesale, to tidy, correct, merge, rename or delete it. Recall it first.",
+    parameters: {
+      type: "object",
+      properties: {
+        topic: { type: "string", description: "The existing topic name" },
+        new_name: { type: "string", description: "A new name, if renaming" },
+        description: { type: "string", description: "One line saying what belongs in the topic" },
+        notes: { type: "array", items: { type: "string" }, description: "The complete new set of notes; empty deletes the topic" },
+      },
+      required: ["topic", "description", "notes"],
+    },
+  },
+}, {
+  type: "function",
+  function: {
+    name: "search_conversations",
+    description: "Search everything said in earlier conversations, by subject, by date, or both.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "What to look for. Leave out to list what was said in a date range" },
+        from: { type: "string", description: "Earliest date, as YYYY-MM-DD" },
+        to: { type: "string", description: "Latest date, as YYYY-MM-DD" },
+      },
+    },
+  },
+}, {
+  type: "function",
+  function: {
+    name: "end_interview",
+    description: "End the orientation interview.",
+    parameters: { type: "object", properties: {} },
+  },
+}];
+
+// ---------------------------------------------------------------- sight
+
+const run = promisify(execFile);
+
+const SIGHT = {
+  screen: { tool: "look_at_screen", what: "screenshot", hint: "look_at_screen shows you the window they are working in" },
+  clipboard: { tool: "look_at_clipboard", what: "copied image", hint: "look_at_clipboard shows you what they last copied" },
+  camera: { tool: "look_at_camera", what: "photo from the laptop's camera", hint: "look_at_camera shows you what is in front of the laptop, usually them" },
+};
+
+const sightTools = () => cfg.sight.map((source) => ({
+  type: "function",
+  function: {
+    name: SIGHT[source].tool,
+    description: `Look, right now: ${SIGHT[source].hint}.`,
+    parameters: {
+      type: "object",
+      properties: {
+        question: { type: "string", description: "What the user wants to know about what you will see" },
+        ...(source === "screen" ? { whole_screen: { type: "boolean", description: "The whole screen, not only the window in use" } } : {}),
+      },
+      required: ["question"],
+    },
+  },
+})).concat(cfg.sight.length ? [{
+  type: "function",
+  function: {
+    name: "remember_picture",
+    description: "Keep a picture so you can recognise who or what is in it later. Only when the user explicitly asks you to "
+      + "remember what someone or something looks like, as in this is me, remember my face, or this is my dog.",
+    parameters: {
+      type: "object",
+      properties: {
+        label: { type: "string", description: "Who or what it is, for example the user, Ana, or the kitchen whiteboard" },
+        source: { type: "string", enum: cfg.sight, description: "Where the picture comes from" },
+        note: { type: "string", description: "Anything worth knowing about it, such as who the person is to the user" },
+      },
+      required: ["label", "source"],
+    },
+  },
+}, {
+  type: "function",
+  function: {
+    name: "forget_picture",
+    description: "Delete a saved picture.",
+    parameters: { type: "object", properties: { label: { type: "string" } }, required: ["label"] },
+  },
+}] : []);
+
+// Pictures the user asked to have kept, so that people and things can be
+// recognised later: one sealed file each, holding a label and a small JPEG.
+const PICTURES = join(MEMORY, "pictures");
+const picturePath = (label) => join(PICTURES, `${slug(label)}.picture`);
+
+function pictures() {
+  if (!existsSync(PICTURES)) return [];
+  return readdirSync(PICTURES).filter((file) => file.endsWith(".picture")).sort().map((file) => JSON.parse(readSealed(join(PICTURES, file))));
+}
+
+let lastLook = null; // { source, bytes, t }: what was last looked at, held in memory only
+
+// Take a picture. Resolves to its bytes, or to { text } when there is no picture to take.
+async function capture(source, args) {
+  const file = join(RUNTIME, `heyclaude-look-${process.pid}.${source === "camera" ? "jpg" : "png"}`);
+  try {
+    if (source === "screen") {
+      const shell = (command) => run("sh", ["-c", command]).then((result) => JSON.parse(result.stdout));
+      if (args.whole_screen) {
+        const monitor = (await shell("hyprctl -j monitors")).find((entry) => entry.focused);
+        await run("grim", ["-o", monitor.name, file]);
+      } else {
+        const { at, size } = await shell("hyprctl -j activewindow");
+        await run("grim", ["-g", `${at[0]},${at[1]} ${size[0]}x${size[1]}`, file]);
+      }
+    } else if (source === "clipboard") {
+      const types = (await run("wl-paste", ["--list-types"]).catch(() => ({ stdout: "" }))).stdout.split("\n");
+      const image = types.find((type) => type === "image/png") ?? types.find((type) => type.startsWith("image/"));
+      if (!image) {
+        const text = (await run("wl-paste", ["--no-newline"]).catch(() => ({ stdout: "" }))).stdout;
+        return { text: text ? `The clipboard holds text, not a picture:\n${text.slice(0, 4000)}` : "The clipboard is empty." };
+      }
+      await run("sh", ["-c", `wl-paste --type '${image}' > '${file}'`]);
+    } else {
+      // The first frames are dark while the camera settles its exposure.
+      await run("ffmpeg", ["-loglevel", "error", "-y", "-f", "v4l2", "-i", cfg.camera, "-vf", "select=gte(n\\,12)", "-frames:v", "1", file], { timeout: 15_000 });
+    }
+    return readFileSync(file);
+  } finally {
+    rmSync(file, { force: true });
+  }
+}
+
+// Look, have the model describe what is there, and keep the picture only in
+// memory, briefly, in case the user says to remember it.
+async function look(source, args) {
+  try {
+    const bytes = await capture(source, args);
+    if (bytes.text) return bytes.text;
+    lastLook = { source, bytes, t: Date.now() };
+    // Saved pictures go along when there may be someone or something to recognise.
+    const known = source === "screen" ? [] : pictures().slice(0, 6);
+    const key = known.length
+      ? ` The first image is the new one. The others are pictures you saved earlier, for comparison: ${known.map((picture, index) => `image ${index + 2} is ${picture.label}${picture.note ? ` (${picture.note})` : ""}`).join("; ")}.`
+        + " Say who or what in the new image matches a saved picture, and say so plainly when you are not sure."
+      : "";
+    const response = await fetch(`${cfg.ollama.url}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(120_000),
+      body: JSON.stringify({
+        model: cfg.ollama.model,
+        stream: false,
+        think: false,
+        keep_alive: cfg.ollama.keepAlive,
+        messages: [{
+          role: "user",
+          content: `This is a ${SIGHT[source].what}. Describe what it shows, fully enough to answer this: "${args.question ?? "What is this?"}" `
+            + `Quote exactly any text that matters. Plain prose, no lists.${key}`,
+          images: [bytes.toString("base64"), ...known.map((picture) => picture.data)],
+        }],
+      }),
+    });
+    if (!response.ok) throw new Error(`Ollama answered ${response.status}`);
+    return (await response.json()).message.content.trim();
+  } catch (error) {
+    return `You could not look: ${error.message.split("\n")[0]}`;
+  }
+}
+
+// Keep a picture under a label: the one just looked at if there is one, or a new one.
+async function rememberPicture(args) {
+  const label = String(args.label ?? "").trim();
+  const source = String(args.source ?? "camera");
+  if (!slug(label)) return "No label given.";
+  if (!cfg.sight.includes(source)) return "You are not allowed to look at that.";
+  const file = join(RUNTIME, `heyclaude-keep-${process.pid}`);
+  try {
+    const fresh = lastLook && lastLook.source === source && Date.now() - lastLook.t < 120_000;
+    const bytes = fresh ? lastLook.bytes : await capture(source, args);
+    if (bytes.text) return "There is no picture there to keep.";
+    // Small enough to send along with every later look.
+    writeFileSync(`${file}.in`, bytes, { mode: 0o600 });
+    await run("ffmpeg", ["-loglevel", "error", "-y", "-i", `${file}.in`, "-vf", "scale='min(768,iw)':-2", "-q:v", "4", `${file}.jpg`]);
+    mkdirSync(PICTURES, { recursive: true });
+    writeSealed(picturePath(label), JSON.stringify({
+      label, note: String(args.note ?? "").trim(), t: Date.now(), data: readFileSync(`${file}.jpg`).toString("base64"),
+    }));
+    emit({ type: "memory", topic: "Pictures", note: `a picture of ${label}` });
+    return `Kept, as a picture of ${label}.`;
+  } catch (error) {
+    return `The picture could not be kept: ${error.message.split("\n")[0]}`;
+  } finally {
+    rmSync(`${file}.in`, { force: true });
+    rmSync(`${file}.jpg`, { force: true });
+  }
+}
+
+// The model cannot be relied on to look before it answers: asked who is at the
+// camera, it will sometimes just say. So a turn that sounds as if it is about
+// seeing is put to a narrow yes-or-no question first, and the looking and the
+// saving are done here, before the model is asked for its answer.
+const SIGHT_WORDS = /\b(camera|webcam|screen|window|clipboard|copied|look(s|ing)?|see|seeing|hold(ing)?|wearing|picture|photo|face|recogni[sz]e|show(ing)?|what is this|what's this)\b/i;
+
+async function sightIntent(text) {
+  if (!cfg.sight.length || !SIGHT_WORDS.test(text)) return null;
+  try {
+    const response = await fetch(`${cfg.ollama.url}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(30_000),
+      body: JSON.stringify({
+        model: cfg.ollama.model,
+        stream: false,
+        think: false,
+        keep_alive: cfg.ollama.keepAlive,
+        format: {
+          type: "object",
+          properties: {
+            look: { type: "string", enum: ["none", ...cfg.sight] },
+            remember: { type: "boolean" },
+            label: { type: "string" },
+          },
+          required: ["look", "remember", "label"],
+        },
+        messages: [{
+          role: "system",
+          content: "A user is speaking to a voice assistant that can look, on request, at: "
+            + `${cfg.sight.map((source) => `${source} (${SIGHT[source].hint.replace(/^\S+ shows you /, "")})`).join("; ")}. `
+            + "Decide what the user's message asks for. look: which of those the assistant must look at right now to do as asked, "
+            + "or none if the message is not a request to look at something present (talk about pictures, screens or seeing in "
+            + "general is none). remember: true only if the user asks for a picture to be kept so that someone or something can be "
+            + "recognised later. label: for remember, who or what the picture is of, in a word or two (their name if they give it); "
+            + "otherwise empty.",
+        }, { role: "user", content: text }],
+      }),
+    });
+    const intent = JSON.parse((await response.json()).message.content);
+    return cfg.sight.includes(intent.look) ? intent : null;
+  } catch (error) {
+    console.error(`sight: ${error.message}`);
+    return null;
+  }
+}
+
+function forgetPicture(args) {
+  const label = String(args.label ?? "");
+  if (!slug(label) || !existsSync(picturePath(label))) return `There is no saved picture of ${label}.`;
+  rmSync(picturePath(label));
+  return `The picture of ${label} is gone.`;
+}
+
+// ---------------------------------------------------------------- events
+
+let state = "idle"; // idle | listening | transcribing | thinking | consulting | speaking
+const watchers = new Set();
+
+function emit(event) {
+  const line = JSON.stringify(event) + "\n";
+  for (const socket of watchers) socket.write(line);
+}
+
+function setState(next) {
+  state = next;
+  emit({ type: "state", state });
+  bindEscape(next !== "idle");
+}
+
+// While Morgan is doing anything, Escape stops it. The key is bound only for
+// that long, and as a pass-through, so the window in front still gets it.
+let escapeBound = false;
+
+function bindEscape(want) {
+  if (want === escapeBound || !process.env.HYPRLAND_INSTANCE_SIGNATURE) return;
+  escapeBound = want;
+  const stop = join(HOME, ".local", "bin", "heyclaude");
+  execFile("hyprctl", ["keyword", ...(want ? ["bindn", `, escape, exec, ${stop} stop`] : ["unbind", ", escape"])], () => {});
+}
+
+function fail(message) {
+  console.error(message);
+  emit({ type: "error", message });
+}
+
+// ---------------------------------------------------------------- memory
+//
+// One file per topic: the first line is the topic's name, the second its
+// description, then one "- note" per line. Sealed on disk (see lib.mjs);
+// `heyclaude settings` shows what is remembered.
+
+let interviewing = false;
+
+const slug = (name) => String(name).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60);
+const topicPath = (name) => join(MEMORY, `${slug(name)}.topic`);
+
+// Topics written before memory was sealed.
+if (existsSync(MEMORY)) {
+  for (const file of readdirSync(MEMORY).filter((name) => name.endsWith(".md"))) {
+    writeSealed(join(MEMORY, `${file.slice(0, -3)}.topic`), readFileSync(join(MEMORY, file), "utf8"));
+    rmSync(join(MEMORY, file));
+  }
+}
+
+function readTopic(name) {
+  if (!slug(name) || !existsSync(topicPath(name))) return null;
+  const [title = "", description = "", ...rest] = readSealed(topicPath(name)).split("\n");
+  const notes = rest.filter((line) => line.startsWith("- ")).map((line) => line.slice(2));
+  return { name: title.replace(/^#\s*/, ""), description, notes };
+}
+
+function writeTopic({ name, description, notes }) {
+  mkdirSync(MEMORY, { recursive: true });
+  const oneLine = (text) => String(text ?? "").replace(/\s+/g, " ").trim();
+  writeSealed(topicPath(name), [`# ${oneLine(name)}`, oneLine(description), "", ...notes.map((note) => `- ${oneLine(note)}`), ""].join("\n"));
+}
+
+function topics() {
+  if (!existsSync(MEMORY)) return [];
+  return readdirSync(MEMORY).filter((file) => file.endsWith(".topic")).sort().map((file) => readTopic(file.slice(0, -6)));
+}
+
+function topicList() {
+  const all = topics();
+  if (!all.length) return "(none yet)";
+  return all.map((topic) => `- ${topic.name}: ${topic.description} (${topic.notes.length} notes)`).join("\n");
+}
+
+function memoryTool(name, args) {
+  const topic = String(args.topic ?? "").trim();
+  if (name === "end_interview") {
+    interviewing = false;
+    emit({ type: "interview", active: false });
+    return "The interview is over.";
+  }
+  if (!slug(topic)) return "No topic given.";
+  const existing = readTopic(topic);
+  if (name === "recall") {
+    emit({ type: "recall", topic });
+    if (!existing) return `There is no topic called ${topic}. Your topics:\n${topicList()}`;
+    return `${existing.name}: ${existing.description}\n${existing.notes.map((note) => `- ${note}`).join("\n")}`;
+  }
+  if (name === "remember") {
+    const note = String(args.note ?? "").trim();
+    if (!note) return "No note given.";
+    const today = new Date().toISOString().slice(0, 10);
+    writeTopic({
+      name: existing?.name ?? topic,
+      description: existing?.description || args.description || "",
+      notes: [...(existing?.notes ?? []), `${note} (${today})`],
+    });
+    emit({ type: "memory", topic: existing?.name ?? topic, note });
+    return existing ? "Saved." : `Saved, in the new topic ${topic}.`;
+  }
+  if (name === "rewrite_topic") {
+    if (!existing) return `There is no topic called ${topic}.`;
+    const notes = (Array.isArray(args.notes) ? args.notes : []).map(String).filter((note) => note.trim());
+    const newName = String(args.new_name ?? "").trim() || existing.name;
+    if (slug(newName) !== slug(topic) && readTopic(newName)) return `A topic called ${newName} already exists; recall and rewrite that one.`;
+    rmSync(topicPath(topic), { force: true });
+    if (notes.length) writeTopic({ name: newName, description: args.description || existing.description, notes });
+    emit({ type: "memory", topic: newName, rewritten: true, notes: notes.length });
+    return notes.length ? `Rewrote ${newName} with ${notes.length} notes.` : `Deleted ${topic}.`;
+  }
+  return `Unknown tool: ${name}`;
+}
+
+// ---------------------------------------------------------------- MCP servers
+
+const mcpClients = new Map();
+let mcpTools = []; // in Ollama's tool format, named server__tool
+
+async function connectMcpServers() {
+  for (const [name, spec] of Object.entries(cfg.mcpServers)) {
+    const client = new McpClient(name, spec);
+    try {
+      const tools = (await client.start()).filter((tool) => toolAllowed(spec, tool));
+      mcpClients.set(name, client);
+      for (const tool of tools) {
+        if (!readOnly(tool)) changes.add(`${name}__${tool.name}`);
+        mcpTools.push({
+          type: "function",
+          function: {
+            name: `${name}__${tool.name}`,
+            description: (readOnly(tool) ? "" : "Puts this action forward for the user's yes; call it as soon as they ask for it. ") + (tool.description ?? ""),
+            parameters: tool.inputSchema ?? { type: "object", properties: {} },
+          },
+        });
+      }
+      console.error(`mcp: ${name} connected, ${tools.length} tools`);
+    } catch (error) {
+      client.stop();
+      fail(`mcp: ${name} failed to connect: ${error.message}`);
+    }
+  }
+}
+
+// A tool that changes something is not run when the model calls it. The call
+// is held as a proposal; the model is told to say what it proposes and ask;
+// and it is run here, not by the model, once the user's next words are a
+// plain yes. The model's word that the user agreed is never what decides.
+const changes = new Set(); // names of the tools that change things
+let proposals = []; // [{ name, args }], all put forward in the same turn
+let acted = false; // something was put forward or carried out in this turn
+
+const CHANGE_ASKED = /\b(add|create|make|new|delete|remove|archive|unarchive|update|change|edit|rename|move|mark|complete|finish|send|reply|forward|schedule|reschedule|cancel|set|put|tag|assign|draft|post|save)\b/i;
+const CHANGE_CLAIMED = /\b(i've|i have|i just|i went ahead|has been|have been|is now|are now|it's been|all set|all done|taken care of|successfully)\b[^.?!]*\b(added|created|made|deleted|removed|archived|unarchived|updated|changed|edited|renamed|moved|marked|completed|sent|replied|forwarded|scheduled|rescheduled|cancelled|canceled|set|tagged|assigned|drafted|posted|saved|done)\b|\ball set\b|\bsuccessfully\b/i;
+const PERMISSION_ASKED = /\b(shall i|should i|want me to|would you like me to|do you want me to|like me to|is that (ok|okay|right|correct)|does that (work|sound)|sound (good|right)|go ahead|proceed|confirm)\b[^.!]*\?/i;
+const YES = /^(yes|yeah|yep|yup|sure|ok|okay|alright|all right|right|correct|absolutely|definitely|please)?( ?(yes|please|do it|do that|go ahead|go for it|go on|confirm|confirmed|thats right|that is right|thats correct|sounds good|thats fine|fine))*( ?(please|thanks|thank you))?$/;
+
+// Called with the user's words at the start of each turn. Returns what the
+// model should be told about the proposal, if there was one.
+async function settleProposal(text) {
+  const said = words(text.replace(new RegExp(cfg.name, "gi"), "")).join(" ");
+  // A yes with nothing waiting: the model asked permission in words alone.
+  if (!proposals.length && changes.size && said && YES.test(said)) {
+    return "The user has said yes, but nothing has been put forward, so nothing has been carried out. If you were asking "
+      + "permission to change something, call its tool now, and do not say it is done.";
+  }
+  if (!proposals.length) return "";
+  const waiting = proposals;
+  proposals = [];
+  const list = waiting.map(({ name, args }) => `${name} with ${JSON.stringify(args)}`).join("; ");
+  if (!said || !YES.test(said)) {
+    for (const { name } of waiting) emit({ type: "confirm", name, done: false });
+    return `You had proposed: ${list}. The user did not plainly agree, so NONE of it has been done and the proposal is dropped. `
+      + "If they still want it, or want it changed, call the tools again to propose it afresh.";
+  }
+  const results = [];
+  for (const { name, args } of waiting) {
+    emit({ type: "confirm", name, done: true });
+    const [server, tool] = name.split(/__(.*)/s);
+    try { results.push(`${name}: ${(await mcpClients.get(server).call(tool, args)).slice(0, 4000)}`); } catch (error) { results.push(`${name}: it failed: ${error.message}`); }
+  }
+  acted = true;
+  return `The user has just agreed, so this has now been carried out for you: ${list}. Do not call those tools again. `
+    + `Tell them briefly how it went. The results: ${results.join("; ")}`;
+}
+
+// The question put to the user about a proposal. The model that made the
+// proposal is not left to word it: having called the tool, it tends to say
+// the thing is done. This is a separate request that can only ask.
+async function proposalQuestion() {
+  const each = proposals.map(({ name, args }) => `${name.split("__")[1].replace(/_/g, " ")}${Object.keys(args ?? {}).length ? ` with ${Object.entries(args).map(([key, value]) => `${key} ${JSON.stringify(value)}`).join(", ")}` : ""}`);
+  const plain = `I'm about to ${each.join(", and ")}. Shall I go ahead?`;
+  try {
+    const response = await fetch(`${cfg.ollama.url}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(20_000),
+      body: JSON.stringify({
+        model: cfg.ollama.model,
+        stream: false,
+        think: false,
+        keep_alive: cfg.ollama.keepAlive,
+        messages: [{
+          role: "system",
+          content: `You word one question for ${cfg.name}, a voice assistant. The user asked for something that changes their data. `
+            + "It has NOT been done. Write a single short spoken sentence that says exactly what is about to be done, every action "
+            + "listed, in plain words and using the names of things from the conversation, and asks whether to go ahead. It must be "
+            + "a question. Nothing else. "
+            + cfg.style,
+        }, {
+          role: "user",
+          content: `The conversation so far:\n${history.filter((message) => message.role !== "tool" && message.content).slice(-6).map((message) => `${message.role === "user" ? "User" : cfg.name}: ${message.content}`).join("\n")}`
+            + `\n\nWaiting for a yes: ${proposals.map(({ name, args }) => `${name} with ${JSON.stringify(args)}`).join("; ")}`,
+        }],
+      }),
+    });
+    const question = (await response.json()).message.content.trim().replace(/\s+/g, " ");
+    return question.endsWith("?") && question.length < 300 ? question : plain;
+  } catch {
+    return plain;
+  }
+}
+
+async function mcpTool(name, args) {
+  const [server, tool] = name.split(/__(.*)/s);
+  const client = mcpClients.get(server);
+  if (!client || !mcpTools.some((entry) => entry.function.name === name)) return `Unknown tool: ${name}`;
+  if (changes.has(name)) {
+    proposals.push({ name, args });
+    acted = true;
+    emit({ type: "confirm", name, args });
+    return "This changes something, so it has NOT been done yet. Tell the user exactly what you are about to do, with the details that matter, "
+      + "and ask them to say yes. It will be carried out for you when they do. Do not say it is done.";
+  }
+  emit({ type: "tool", name, args });
+  try {
+    // A small model's context is easily flooded by one large result.
+    return (await client.call(tool, args)).slice(0, 12_000);
+  } catch (error) {
+    return `The tool failed: ${error.message}`;
+  }
+}
+
+// ---------------------------------------------------------------- Morgan
+
+const transcript = new Transcript({
+  // A trial run, with its own memory folder, keeps its own transcript too.
+  dir: process.env.HEYCLAUDE_MEMORY ? join(MEMORY, "history") : join(SPEECH, "history"),
+  url: cfg.ollama.url,
+  model: cfg.embedModel,
+});
+
+let history = []; // user, assistant and tool messages, without the system prompt
+let began = 0; // when the conversation in progress started
+let unfiled = 0; // exchanges since memory was last brought up to date
+let recalled = []; // earlier exchanges shown to the model this turn
+let seen = ""; // what was looked at for this turn, before the model was asked
+
+transcript.reindex();
+
+// A conversation interrupted by a restart carries on where it left off.
+for (const item of transcript.since(Date.now() - cfg.idleResetMinutes * 60_000)) {
+  history.push({ role: "user", content: item.user }, { role: "assistant", content: item.morgan });
+  began ||= item.t;
+  unfiled++;
+}
+
+async function searchTool(args) {
+  const day = (text, end) => {
+    const time = Date.parse(`${text}T00:00:00`);
+    return Number.isNaN(time) ? undefined : time + (end ? 86_400_000 : 0);
+  };
+  const hits = await transcript.search({
+    query: String(args.query ?? "").trim() || undefined,
+    from: day(args.from) ?? 0,
+    to: Math.min(day(args.to, true) ?? Infinity, began || Infinity),
+    limit: 8,
+  });
+  emit({ type: "recall", topic: args.query ?? `${args.from ?? ""} to ${args.to ?? ""}` });
+  return hits.length ? hits.map((hit) => describe(hit, 700)).join("\n") : "Nothing was found.";
+}
+
+// When a conversation is over, read it back and file what should last. In the
+// moment Morgan saves what it notices; this catches what it did not.
+async function fileAway(turns) {
+  const text = turns
+    .filter((message) => message.role !== "tool" && message.content)
+    .map((message) => `${message.role === "user" ? "User" : cfg.name}: ${message.content}`)
+    .join("\n");
+  const messages = [{
+    role: "system",
+    content: [
+      `You are ${cfg.name}, looking back over a conversation you have just had with the user in order to keep your`,
+      "long-term memory of them up to date. Save anything lasting that is not already in memory: facts about them,",
+      "their people, work, projects, plans, routines and preferences, and decisions reached. Ignore small talk and",
+      "anything that only mattered in the moment. Recall a topic before adding to it, so that you do not repeat what",
+      "is there; use rewrite_topic to correct what has changed and to keep topics few and broad. When there is",
+      `nothing more to save, reply with the single word done.\n\nYour memory topics:\n${topicList()}`,
+    ].join(" "),
+  }, { role: "user", content: `The conversation:\n\n${text}` }];
+  const tools = MORGAN_TOOLS.filter((tool) => ["recall", "remember", "rewrite_topic"].includes(tool.function.name));
+  try {
+    for (let round = 0; round < 8; round++) {
+      const response = await fetch(`${cfg.ollama.url}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: AbortSignal.timeout(120_000),
+        body: JSON.stringify({ model: cfg.ollama.model, stream: false, think: cfg.ollama.think, keep_alive: cfg.ollama.keepAlive, tools, messages }),
+      });
+      if (!response.ok) throw new Error(`Ollama answered ${response.status}`);
+      const reply = (await response.json()).message;
+      messages.push(reply);
+      if (!reply.tool_calls?.length) break;
+      for (const call of reply.tool_calls) {
+        messages.push({ role: "tool", tool_name: call.function.name, content: memoryTool(call.function.name, call.function.arguments ?? {}) });
+      }
+    }
+  } catch (error) {
+    console.error(`filing memory: ${error.message}`);
+  }
+}
+let turn = 0; // bumped whenever the current turn is abandoned
+let abort = null;
+let lastActivity = 0;
+
+// A typed turn is answered in text only; a spoken one is read aloud.
+async function ask(text, { typed = false } = {}) {
+  text = text.trim();
+  interrupt();
+  quiet = typed;
+  if (typed) spokenTurn = false;
+  if (!text) return setState("idle");
+  if (lastActivity && Date.now() - lastActivity > cfg.idleResetMinutes * 60_000) reset();
+  const mine = ++turn;
+  lastActivity = Date.now();
+  began ||= lastActivity;
+  history.push({ role: "user", content: text });
+  emit({ type: "user", text });
+  setState("thinking");
+  let spoke = false;
+  const said = [];
+  const told = [];
+  const saw = [];
+  try {
+    const hits = await transcript.search({ query: text, to: began, limit: 3 });
+    if (process.env.HEYCLAUDE_DEBUG) console.error("recall", hits.map((hit) => `${hit.score.toFixed(2)} ${hit.item.user.slice(0, 40)}`));
+    recalled = hits.filter((hit) => hit.score >= cfg.recallScore);
+    if (mine !== turn) return;
+    acted = false;
+    seen = await settleProposal(text);
+    if (mine !== turn) return;
+    // Where the user may be asking for a change, the answer is held back
+    // until it is whole, so that a false "done" is never spoken.
+    const guarded = changes.size > 0 && (CHANGE_ASKED.test(text) || YES.test(words(text).join(" ")));
+    let corrected = false;
+    const intent = await sightIntent(text);
+    if (mine !== turn) return;
+    if (intent) {
+      emit({ type: "look", source: intent.look });
+      const view = await look(intent.look, { question: text });
+      if (mine !== turn) return;
+      saw.push(view);
+      seen += ` For this request you have just looked at the ${intent.look}, and this is what you saw: ${view}`;
+      if (intent.remember) {
+        const kept = await rememberPicture({ label: intent.label || "the user", source: intent.look });
+        if (mine !== turn) return;
+        seen += ` You were asked to keep the picture, and the result was: ${kept}`;
+      }
+    }
+    // Morgan may use its tools several times in a turn, but not for ever.
+    for (let round = 0; round < 8; round++) {
+      const reply = await morgan(mine, (delta) => { if (!guarded) { spoke = true; speakDelta(delta); } });
+      if (mine !== turn) return;
+      if (guarded && !acted && !reply.tool_calls?.length && CHANGE_CLAIMED.test(reply.content)) {
+        // It says it did something and nothing was done. Once, it is told so
+        // and asked again; after that the user is simply told the truth.
+        if (!corrected) {
+          corrected = true;
+          seen += " You have just drafted a reply saying a change was made. That is false: nothing has been carried out or put"
+            + " forward. Call the tool for it now, or say plainly that it has not been done.";
+          continue;
+        }
+        reply.content = "I haven't actually done that yet. Could you ask me again?";
+      } else if (guarded && !acted && !corrected && !reply.tool_calls?.length && PERMISSION_ASKED.test(reply.content)) {
+        // Asking in words leaves nothing for a yes to act on, and the user
+        // would have to agree twice. It is sent back to call the tool.
+        corrected = true;
+        seen += " You have just drafted a reply asking the user's permission in words. Do not: call the tool for it now. Calling it"
+          + " only puts the action forward, and the user is then asked for you.";
+        continue;
+      }
+      history.push(reply);
+      if (reply.content) {
+        said.push(reply.content);
+        emit({ type: "assistant", text: reply.content });
+        // A held-back answer is spoken now, unless a proposal's question is about to replace it.
+        if (guarded && !reply.tool_calls?.length) speakDelta(`${reply.content} `);
+      }
+      if (!reply.tool_calls?.length) break;
+      speakFlush();
+      for (const call of reply.tool_calls) {
+        let result;
+        if (call.function.name.includes("__")) {
+          result = await mcpTool(call.function.name, call.function.arguments ?? {});
+          if (mine !== turn) return;
+        } else if (call.function.name === "remember_picture") {
+          emit({ type: "look", source: String(call.function.arguments?.source ?? "camera") });
+          result = await rememberPicture(call.function.arguments ?? {});
+          if (mine !== turn) return;
+        } else if (call.function.name === "forget_picture") {
+          result = forgetPicture(call.function.arguments ?? {});
+        } else if (call.function.name.startsWith("look_at_")) {
+          const source = call.function.name.slice(8);
+          if (!cfg.sight.includes(source)) { result = "You are not allowed to look at that."; } else {
+            emit({ type: "look", source });
+            result = await look(source, call.function.arguments ?? {});
+            if (mine !== turn) return;
+            saw.push(result);
+            result = `What you see:\n${result}`;
+          }
+        } else if (call.function.name === "search_conversations") {
+          result = await searchTool(call.function.arguments ?? {});
+          if (mine !== turn) return;
+        } else if (call.function.name !== "consult_oracle") {
+          result = memoryTool(call.function.name, call.function.arguments ?? {});
+        } else {
+          if (!spoke) enqueue(cfg.consultLine);
+          setState("consulting");
+          const question = String(call.function.arguments?.question ?? text);
+          emit({ type: "consult", question });
+          const answer = await consultOracle(question);
+          if (mine !== turn) return;
+          emit({ type: "oracle", text: answer });
+          told.push(answer);
+          result = `The Oracle answered as follows. Relay it briefly, and say that it is what the Oracle told you.\n\n${answer}`;
+          setState("thinking");
+        }
+        history.push({ role: "tool", tool_name: call.function.name, content: result });
+      }
+      if (proposals.length) {
+        // The turn ends here, on a question the model does not get to answer for the user.
+        const question = await proposalQuestion();
+        if (mine !== turn) return;
+        history.push({ role: "assistant", content: question });
+        said.push(question);
+        emit({ type: "assistant", text: question });
+        speakDelta(`${question} `);
+        break;
+      }
+      spoke = false;
+    }
+  } catch (error) {
+    if (mine !== turn) return;
+    fail(`${cfg.name}: ${error.message}`);
+  }
+  lastActivity = Date.now();
+  if (said.length) {
+    unfiled++;
+    transcript.add({ user: text, morgan: said.join(" "), ...(saw.length ? { saw: saw.join(" ") } : {}), ...(told.length ? { oracle: told.join(" ") } : {}) });
+  }
+  speakFlush();
+  finishSpeaking();
+}
+
+// One streamed chat completion. Text is passed on as it arrives.
+async function morgan(mine, onText) {
+  abort = new AbortController();
+  const response = await fetch(`${cfg.ollama.url}/api/chat`, {
+    method: "POST",
+    signal: abort.signal,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: cfg.ollama.model,
+      stream: true,
+      think: cfg.ollama.think,
+      keep_alive: cfg.ollama.keepAlive,
+      tools: [...MORGAN_TOOLS, ...sightTools(), ...mcpTools],
+      messages: [{ role: "system", content: morganPrompt() }, ...history],
+    }),
+  });
+  if (!response.ok) throw new Error(`Ollama answered ${response.status}: ${(await response.text()).slice(0, 200)}`);
+  const reply = { role: "assistant", content: "" };
+  let buffer = "";
+  for await (const chunk of response.body.pipeThrough(new TextDecoderStream())) {
+    buffer += chunk;
+    let newline;
+    while ((newline = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, newline);
+      buffer = buffer.slice(newline + 1);
+      if (!line.trim()) continue;
+      const part = JSON.parse(line);
+      if (part.error) throw new Error(part.error);
+      const message = part.message ?? {};
+      if (message.content) {
+        reply.content += message.content;
+        if (mine === turn) onText(message.content);
+      }
+      if (message.tool_calls?.length) reply.tool_calls = [...(reply.tool_calls ?? []), ...message.tool_calls];
+    }
+  }
+  return reply;
+}
+
+function reset() {
+  if (unfiled && !interviewing) fileAway(history);
+  unfiled = 0;
+  began = 0;
+  recalled = [];
+  seen = "";
+  proposals = [];
+  history = [];
+  interviewing = false;
+  stopOracle();
+  lastActivity = 0;
+}
+
+// Abandon whatever is in flight: speech, Morgan's stream, a consultation.
+function interrupt() {
+  turn++;
+  stopSpeech();
+  abort?.abort();
+  abort = null;
+  if (consulting) {
+    const { resolve } = consulting;
+    consulting = null;
+    dropResult = true;
+    oracle?.stdin.write(JSON.stringify({
+      type: "control_request", request_id: randomUUID(), request: { subtype: "interrupt" },
+    }) + "\n");
+    resolve("");
+  }
+  // A turn cut off before Morgan answered would leave the history ending on a
+  // user message or a tool call with no result; drop back to the last answer.
+  while (history.length && !(history.at(-1).role === "assistant" && !history.at(-1).tool_calls?.length)) history.pop();
+}
+
+// ---------------------------------------------------------------- the Oracle
+
+let oracle = null;
+let oracleBuffer = "";
+let consulting = null; // { resolve } while a question is out
+let dropResult = false; // an interrupted consultation's answer is discarded
+
+function oracleEnv() {
+  // The Oracle has its own login. Nothing inherited may point it elsewhere.
+  const env = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (!/^(CLAUDE|ANTHROPIC)/.test(key)) env[key] = value;
+  }
+  env.ANTHROPIC_CONFIG_DIR = join(CONFIG_HOME, "anthropic");
+  env.CLAUDE_CONFIG_DIR = join(CONFIG_HOME, "claude");
+  return env;
+}
+
+function startOracle() {
+  mkdirSync(WORKDIR, { recursive: true });
+  const args = [
+    "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+    "--model", cfg.oracle.model,
+    "--append-system-prompt", ORACLE_PROMPT,
+    "--tools", cfg.oracle.tools.join(","),
+  ];
+  if (cfg.oracle.allowedTools.length) args.push("--allowedTools", cfg.oracle.allowedTools.join(","));
+
+  const child = spawn(cfg.oracle.claude, args, { cwd: WORKDIR, env: oracleEnv(), stdio: ["pipe", "pipe", "pipe"] });
+  oracle = child;
+  oracleBuffer = "";
+  dropResult = false;
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => {
+    oracleBuffer += chunk;
+    let newline;
+    while ((newline = oracleBuffer.indexOf("\n")) >= 0) {
+      const line = oracleBuffer.slice(0, newline);
+      oracleBuffer = oracleBuffer.slice(newline + 1);
+      if (!line.trim()) continue;
+      try { onOracleMessage(JSON.parse(line)); } catch { /* not a JSON line */ }
+    }
+  });
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (text) => console.error("oracle:", text.trimEnd()));
+  child.on("error", (error) => console.error("oracle:", error.message));
+  child.on("exit", (code) => {
+    if (oracle !== child) return;
+    oracle = null;
+    answerConsultation(`The Oracle could not be reached (exit code ${code}).`);
+  });
+}
+
+function stopOracle() {
+  const child = oracle;
+  oracle = null;
+  child?.kill("SIGTERM");
+}
+
+function onOracleMessage(message) {
+  if (message.type === "assistant") {
+    if (dropResult) return;
+    for (const block of message.message?.content ?? []) {
+      if (block.type === "tool_use") emit({ type: "tool", name: block.name });
+    }
+  } else if (message.type === "result") {
+    if (dropResult) { dropResult = false; return; }
+    const text = String(message.result ?? "").trim();
+    answerConsultation(message.is_error ? `The Oracle could not answer: ${text}` : text);
+  }
+}
+
+function answerConsultation(text) {
+  const pending = consulting;
+  consulting = null;
+  pending?.resolve(text);
+}
+
+function consultOracle(question) {
+  if (!oracle) startOracle();
+  // The Oracle gets the conversation so far: Morgan's question alone often
+  // leans on something said earlier.
+  const recent = history
+    .filter((message) => message.role !== "tool" && message.content)
+    .slice(-8)
+    .map((message) => `${message.role === "user" ? "User" : cfg.name}: ${message.content}`)
+    .join("\n");
+  const content = `Recent conversation:\n${recent}\n\n${cfg.name}'s question for you:\n${question}`;
+  return new Promise((resolve) => {
+    consulting = { resolve };
+    oracle.stdin.write(JSON.stringify({ type: "user", message: { role: "user", content } }) + "\n");
+  });
+}
+
+// ---------------------------------------------------------------- speech out
+
+let pending = ""; // text received but not yet a whole sentence
+const sentences = [];
+let speaker = null;
+let turnDone = false;
+let quiet = false; // the current turn was typed, so nothing is spoken
+
+function speakDelta(text) {
+  pending += text;
+  let match;
+  // A sentence is spoken once the whitespace after its full stop has arrived.
+  while ((match = pending.match(/^([\s\S]*?[.!?…]+)\s+/))) {
+    enqueue(match[1]);
+    pending = pending.slice(match[0].length);
+  }
+}
+
+function speakFlush() {
+  enqueue(pending);
+  pending = "";
+}
+
+function enqueue(sentence) {
+  const clean = sentence.replace(/[*_#`>]+/g, "").replace(/\s+/g, " ").trim();
+  if (!clean) return;
+  emit({ type: "sentence", text: clean });
+  if (!cfg.tts || quiet) return;
+  sentences.push(clean);
+  speakNext();
+}
+
+// Speak one piece of text. The audio passes through here on its way to the
+// player so that its loudness can be reported, in step with playback, to
+// whatever is drawing a waveform.
+function utter(text, done) {
+  for (const [word, said] of Object.entries(cfg.pronunciations)) {
+    text = text.replace(new RegExp(`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "gi"), said);
+  }
+  // Kokoro answers on its socket with the whole sentence; Piper is run afresh
+  // for each one. Either way the audio arrives here as a stream.
+  const kokoro = kokoroReady;
+  const rate = kokoro ? 24000 : voiceRate;
+  let source;
+  let synth = null;
+  if (kokoro) {
+    source = connect(KOKORO_SOCKET);
+    source.end(text + "\n");
+  } else {
+    synth = spawn("sh", ["-c", "exec " + cfg.tts.replace("{voice}", `'${voiceFile}'`)], { stdio: ["pipe", "pipe", "ignore"] });
+    synth.stdin.on("error", () => {});
+    synth.stdin.end(text + "\n");
+    source = synth.stdout;
+  }
+  const player = spawn("sh", ["-c", "exec " + cfg.play.replace("{rate}", rate)], { stdio: ["pipe", "ignore", "ignore"] });
+  const WINDOW = Math.round(rate * 0.05) * 2; // 50 ms
+  const levels = [];
+  let rest = Buffer.alloc(0);
+  let shown = 0;
+  let timer = null;
+  let finished = false;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    clearInterval(timer);
+    emit({ type: "level", who: "morgan", value: 0 });
+    done();
+  };
+  player.stdin.on("error", () => {});
+  source.on("data", (chunk) => {
+    player.stdin.write(chunk);
+    rest = Buffer.concat([rest, chunk]);
+    for (; rest.length >= WINDOW; rest = rest.subarray(WINDOW)) {
+      let sum = 0;
+      for (let i = 0; i < WINDOW; i += 2) sum += rest.readInt16LE(i) ** 2;
+      levels.push(Math.min(1, Math.sqrt(sum / (WINDOW / 2)) / 10000));
+    }
+    timer ??= setInterval(() => {
+      if (shown < levels.length) emit({ type: "level", who: "morgan", value: Number(levels[shown++].toFixed(2)) });
+    }, 50);
+  });
+  source.on("end", () => player.stdin.end());
+  source.on("error", () => player.stdin.end());
+  synth?.on("error", finish);
+  player.on("error", finish);
+  player.on("exit", finish);
+  return { stop() { finished = true; clearInterval(timer); synth?.kill("SIGTERM"); if (kokoro) source.destroy(); player.kill("SIGTERM"); } };
+}
+
+function speakNext() {
+  if (speaker || !sentences.length) return;
+  if (state === "thinking") setState("speaking");
+  const mine = utter(sentences.shift(), () => {
+    if (speaker === mine) speaker = null;
+    speakNext();
+    if (turnDone) finishSpeaking();
+  });
+  speaker = mine;
+}
+
+function finishSpeaking() {
+  turnDone = true;
+  if (speaker || sentences.length) return;
+  turnDone = false;
+  if (state !== "thinking" && state !== "speaking") return;
+  setState("idle");
+  const invite = spokenTurn && cfg.tts && cfg.followUpSeconds > 0;
+  spokenTurn = false;
+  if (invite) startActive(cfg.followUpSeconds);
+}
+
+function stopSpeech() {
+  pending = "";
+  sentences.length = 0;
+  turnDone = false;
+  speaker?.stop();
+  speaker = null;
+  emit({ type: "level", who: "morgan", value: 0 });
+}
+
+// ---------------------------------------------------------------- speech in
+//
+// The microphone is cut into utterances by loudness: one starts after 150 ms
+// of sound and ends after a pause. In "active" mode (after the wake word, a
+// toggle, or an answer that invites a reply) the next utterance is the user's
+// turn. Otherwise, with a wake word set, each utterance is checked for it.
+
+const FRAME = 480 * 2; // 30 ms of 16 kHz 16-bit mono
+const PREROLL = 15; // frames kept from before an utterance, so its first sound is not clipped
+
+let mic = null;
+let active = null; // { since, patience } while waiting for the user's turn
+let rest = Buffer.alloc(0);
+let floor = 0; // background level
+let calibrating = 0;
+let preroll = [];
+let utterance = null; // { frames: [], quietMs }
+let loudRun = 0;
+let checkingWake = false;
+let meter = 0;
+let spokenTurn = false; // the turn in progress came from the microphone
+
+// PipeWire's echo canceller, loaded for as long as the daemon runs: a second
+// microphone with whatever the speakers are playing subtracted from it. The
+// system's own default devices are left as they are.
+const CLEAN_MIC = "heyclaude.mic";
+let canceller = null;
+
+function startCanceller() {
+  if (!cfg.echoCancel) return;
+  canceller = spawn("pw-cli", [], { stdio: ["pipe", "ignore", "ignore"] });
+  canceller.on("error", () => { canceller = null; });
+  canceller.on("exit", () => { canceller = null; });
+  canceller.stdin.write("load-module libpipewire-module-echo-cancel { library.name = aec/libspa-aec-webrtc monitor.mode = true"
+    + " capture.props = { node.name = heyclaude.ec.capture node.passive = true }"
+    + ` source.props = { node.name = ${CLEAN_MIC} node.description = "heyclaude microphone (echo cancelled)" priority.session = 1 } }\n`);
+}
+
+let spot = null;
+
+function startSpotter() {
+  const phrases = [...new Set([cfg.wakeWord, interruptWord()].filter(Boolean))];
+  if (cfg.wakeEngine !== "spotter" || !phrases.length || !wake.available()) return;
+  try {
+    spot = wake.spotter(phrases, { threshold: cfg.wakeThreshold });
+    console.error(`wake word: spotting ${phrases.map((phrase) => `"${phrase}"`).join(" and ")}`);
+  } catch (error) {
+    console.error(`wake word: falling back to transcribing (${error.message})`);
+  }
+}
+
+const same = (a, b) => words(a ?? "").join(" ") === words(b ?? "").join(" ");
+let wakeHit = 0; // when the spotter last heard the wake word
+let wakeSure = false; // and whether it heard the whole phrase
+
+const interruptWord = () => (cfg.interruptWord === undefined ? cfg.name : cfg.interruptWord);
+const busy = () => state === "speaking" || state === "thinking" || state === "consulting";
+
+function openMic() {
+  if (mic) return;
+  const command = cfg.record.replace("{target}", canceller ? `--target ${CLEAN_MIC}` : "");
+  const child = spawn("sh", ["-c", "exec " + command], { stdio: ["ignore", "pipe", "ignore"] });
+  mic = child;
+  rest = Buffer.alloc(0);
+  floor = 0;
+  calibrating = 10;
+  resetUtterance();
+  child.stdout.on("data", (chunk) => {
+    if (mic !== child) return;
+    rest = Buffer.concat([rest, chunk]);
+    for (; rest.length >= FRAME && mic === child; rest = rest.subarray(FRAME)) onFrame(Buffer.from(rest.subarray(0, FRAME)));
+  });
+  child.on("error", (error) => fail(`recording failed: ${error.message}`));
+  child.on("exit", () => { if (mic === child) mic = null; });
+}
+
+function closeMic() {
+  const child = mic;
+  mic = null;
+  child?.kill("SIGTERM");
+}
+
+function resetUtterance() {
+  preroll = [];
+  utterance = null;
+  loudRun = 0;
+}
+
+function onFrame(frame) {
+  let sum = 0;
+  for (let i = 0; i < FRAME; i += 2) sum += frame.readInt16LE(i) ** 2;
+  const level = Math.sqrt(sum / (FRAME / 2));
+  if (calibrating) { floor += level / 10; calibrating--; return; }
+  if (!active && state === "transcribing") return resetUtterance();
+  if (spot && !active) {
+    const hit = spot.feed(frame);
+    if (hit && process.env.HEYCLAUDE_DEBUG) console.error(`spotter: "${hit}" state=${state} utterance=${Boolean(utterance)} checking=${checkingWake}`);
+    if (hit && busy()) {
+      // Either word cuts an answer short; what follows is the user's turn.
+      emit({ type: "wake" });
+      return startActive(cfg.noSpeechSeconds);
+    }
+    if (hit && cfg.wakeWord) {
+      // The interrupt word is usually part of the wake phrase, and the spotter
+      // may report either for it. Only the full phrase is taken at its word;
+      // the other is checked against the transcript before anything happens.
+      wakeHit = Date.now();
+      wakeSure = same(hit, cfg.wakeWord);
+      // Heard after the utterance had already been let go: nothing came with it.
+      if (wakeSure && !utterance && loudRun === 0 && !checkingWake) { emit({ type: "wake" }); return acknowledge(); }
+    }
+    if (busy()) return resetUtterance();
+  }
+  // While an answer is under way the microphone listens only for the
+  // interrupt word, and not at all if there is none.
+  const interruptible = !active && busy();
+  if (interruptible && !interruptWord()) return resetUtterance();
+
+  if (active && ++meter % 2 === 0) emit({ type: "level", who: "user", value: Number(Math.min(1, level / (canceller ? 1500 : 4000)).toFixed(2)) });
+  // The cancelled microphone is a good deal quieter than the raw one.
+  const loud = level > Math.max(floor * 4, canceller ? 150 : 300);
+  if (!utterance) {
+    if (!loud) floor = floor * 0.98 + level * 0.02;
+    preroll.push(frame);
+    if (preroll.length > PREROLL) preroll.shift();
+    loudRun = loud ? loudRun + 1 : 0;
+    if (loudRun >= 5) utterance = { frames: preroll, quietMs: 0, t: Date.now() };
+    else if (active && Date.now() - active.since > active.patience * 1000) {
+      // Nothing more came: what was heard with the interruption is the whole turn.
+      const { said } = active;
+      stopActive(said ? "transcribing" : "idle");
+      if (said) heard(said);
+    }
+    return;
+  }
+  utterance.frames.push(frame);
+  utterance.quietMs = loud ? 0 : utterance.quietMs + 30;
+  const seconds = utterance.frames.length * 0.03;
+  // An interruption has to be caught quickly, so it is checked in short pieces.
+  if (interruptible) { if (utterance.quietMs >= 300 || seconds >= 1.5) endUtterance(); return; }
+  if (utterance.quietMs >= cfg.endSilenceMs || seconds >= cfg.maxUtteranceSeconds) endUtterance();
+}
+
+function endUtterance() {
+  const pcm = Buffer.concat(utterance.frames);
+  const spotted = wakeHit >= utterance.t - 600;
+  if (process.env.HEYCLAUDE_DEBUG) console.error(`utterance: ${(pcm.length / 32000).toFixed(1)}s state=${state} active=${Boolean(active)} spotted=${spotted} checking=${checkingWake}`);
+  resetUtterance();
+  if (active) {
+    const { said } = active;
+    stopActive("transcribing");
+    transcribe(pcm).then((text) => { if (state === "transcribing") heard(`${said} ${text}`.trim()); });
+  } else if (busy()) {
+    if (!checkingWake) checkInterrupt(pcm);
+  } else if (cfg.wakeWord && !checkingWake) {
+    // With the spotter, only an utterance it heard the wake word in is worth transcribing.
+    if (!spot) checkWake(pcm);
+    else if (spotted) { wakeHit = 0; checkWake(pcm, wakeSure); }
+  }
+}
+
+const STOP = /^(stop|stop it|stop talking|cancel|quiet|be quiet|enough|that's enough|thats enough|never ?mind|shut up|ok|okay|thanks|thank you)?$/;
+
+async function checkInterrupt(pcm) {
+  checkingWake = true;
+  try {
+    const text = await transcribe(pcm);
+    const rest = phraseMatch(text, interruptWord()) ?? (cfg.wakeWord ? phraseMatch(text, cfg.wakeWord) : null);
+    if (rest === null || !busy()) return;
+    emit({ type: "wake" });
+    const spoken = spokenTurn;
+    interrupt();
+    // The word alone, or with "stop", ends the answer and waits; anything
+    // more is taken as the start of what the user wants instead.
+    if (STOP.test(words(rest).join(" "))) startActive(cfg.noSpeechSeconds);
+    else { spokenTurn = spoken; startActive(cfg.noSpeechSeconds, rest); }
+  } catch (error) {
+    fail(error.message);
+  } finally {
+    checkingWake = false;
+  }
+}
+
+// Said on its own, any of these ends the conversation there and then: no
+// answer, no waiting for a reply, back to listening for the wake word.
+const GOODBYE = /^(ok |okay |alright |all right |great |good |thanks |thank you |no |nope |no thanks |no thank you )*(stop|stop it|stop talking|cancel|quiet|be quiet|enough|that's enough|thats enough|shut up|bye|bye bye|goodbye|good bye|see you|see you later|that's all|thats all|that is all|that will be all|that'll be all|that's it|thats it|that is it|i'm done|im done|we're done|were done|all done|nothing else|that's everything|never ?mind|stop listening|go to sleep|good ?night|no thanks|no thank you|thanks|thank you)( for now| then| morgan| thanks| thank you)*$/;
+
+// The user's turn, from the microphone.
+function heard(text) {
+  if (!text) return setState("idle");
+  if (GOODBYE.test(words(text.replace(new RegExp(cfg.name, "gi"), "")).join(" "))) {
+    proposals = [];
+    emit({ type: "user", text });
+    spokenTurn = false;
+    return setState("idle");
+  }
+  spokenTurn = true;
+  ask(text);
+}
+
+// `spotted`: the spotter has already heard the wake word here, so the
+// transcript is wanted only for whatever was said after it.
+async function checkWake(pcm, spotted = false) {
+  checkingWake = true;
+  try {
+    // The phrase opens the utterance, so the first few seconds settle it.
+    const opening = spotted ? await transcribe(pcm) : await transcribe(pcm.subarray(0, 3 * 32000));
+    if (wakeMatch(opening) === null && !spotted) return;
+    let command = spotted || pcm.length <= 3 * 32000 ? wakeMatch(opening) : wakeMatch(await transcribe(pcm));
+    // The spotter heard the phrase but the transcript spells it some other
+    // way: take it to be the opening words, and the rest to be the request.
+    command ??= spotted ? opening.split(/\s+/).slice(words(cfg.wakeWord).length).join(" ") : "";
+    emit({ type: "wake" });
+    if (command) heard(command);
+    else acknowledge();
+  } catch (error) {
+    fail(error.message);
+  } finally {
+    checkingWake = false;
+  }
+}
+
+// Answer a bare wake word, then listen for the turn.
+function acknowledge() {
+  if (!cfg.tts || !cfg.wakeReply) return startActive(cfg.noSpeechSeconds);
+  interrupt();
+  setState("speaking"); // so the reply is not taken for the user
+  speaker = utter(cfg.wakeReply, () => {
+    speaker = null;
+    if (state === "speaking") startActive(cfg.noSpeechSeconds);
+  });
+}
+
+const words = (text) => text.toLowerCase().replace(/[^a-z0-9\s]/g, "").split(/\s+/).filter(Boolean);
+
+function distance(a, b) {
+  let row = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const next = [i];
+    for (let j = 1; j <= b.length; j++) {
+      next[j] = Math.min(row[j] + 1, next[j - 1] + 1, row[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    row = next;
+  }
+  return row[b.length];
+}
+
+// What follows the wake word in a transcript, or null if it is not there.
+// Speech recognition spells names loosely, so near misses count.
+const wakeMatch = (text) => phraseMatch(text, cfg.wakeWord);
+
+function phraseMatch(text, phrase) {
+  const wake = words(phrase);
+  const spoken = text.split(/\s+/).filter((word) => words(word).length);
+  const slack = wake.join("").length >= 8 ? 2 : 1;
+  for (let at = 0; at <= 2 && at + wake.length <= spoken.length; at++) {
+    const window = words(spoken.slice(at, at + wake.length).join(" ")).join("");
+    if (distance(window, wake.join("")) <= slack) return spoken.slice(at + wake.length).join(" ");
+  }
+  return null;
+}
+
+// Wait for the user's turn. `said` is the start of it, already heard.
+function startActive(patience, said = "") {
+  interrupt();
+  openMic();
+  resetUtterance();
+  active = { since: Date.now(), patience, said };
+  setState("listening");
+}
+
+function stopActive(next = "idle") {
+  if (!active) return;
+  active = null;
+  if (!cfg.wakeWord && !interruptWord()) closeMic();
+  setState(next);
+}
+
+let wavCount = 0;
+
+function transcribe(pcm) {
+  return new Promise((resolve, reject) => {
+    if (!cfg.stt) return reject(new Error("no speech-to-text command configured (stt)"));
+    const file = join(RUNTIME, `heyclaude-${process.pid}-${wavCount++}.wav`);
+    const header = Buffer.alloc(44);
+    header.write("RIFF", 0); header.writeUInt32LE(36 + pcm.length, 4); header.write("WAVEfmt ", 8);
+    header.writeUInt32LE(16, 16); header.writeUInt16LE(1, 20); header.writeUInt16LE(1, 22);
+    header.writeUInt32LE(16000, 24); header.writeUInt32LE(32000, 28); header.writeUInt16LE(2, 32);
+    header.writeUInt16LE(16, 34); header.write("data", 36); header.writeUInt32LE(pcm.length, 40);
+    writeFileSync(file, Buffer.concat([header, pcm]));
+    const prompt = `${cfg.wakeWord ? cfg.wakeWord + ". " : ""}${cfg.sttPrompt}`.replace(/'/g, "");
+    const command = cfg.stt.replace("{file}", `'${file}'`).replace("{prompt}", `'${prompt}'`);
+    let out = "";
+    const child = spawn("sh", ["-c", command], { stdio: ["ignore", "pipe", "ignore"] });
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (text) => { out += text; });
+    child.on("exit", (code) => {
+      rmSync(file, { force: true });
+      if (code !== 0) return reject(new Error(`speech-to-text exited with code ${code}`));
+      // whisper marks non-speech as [BLANK_AUDIO], (music) and the like
+      resolve(out.replace(/\[[^\]]*\]|\([^)]*\)/g, " ").replace(/\s+/g, " ").trim());
+    });
+  });
+}
+
+// ---------------------------------------------------------------- control socket
+
+function handle(line, socket) {
+  const [command, ...rest] = line.trim().split(" ");
+  const reply = (object) => socket.end(JSON.stringify(object) + "\n");
+  switch (command) {
+    case "toggle":
+      // While listening: send what has been said so far, or give up if nothing has.
+      if (!active) startActive(cfg.noSpeechSeconds);
+      else if (utterance) endUtterance();
+      else stopActive();
+      return reply({ ok: true, state });
+    case "say":
+      stopActive();
+      spokenTurn = true;
+      ask(rest.join(" "));
+      return reply({ ok: true, state });
+    case "speak":
+      if (cfg.tts) { sentences.push(rest.join(" ")); speakNext(); }
+      return reply({ ok: true, state });
+    case "type":
+      stopActive();
+      ask(rest.join(" "), { typed: true });
+      return reply({ ok: true, state });
+    case "stop":
+      stopActive();
+      interrupt();
+      proposals = [];
+      emit({ type: "dismiss" });
+      setState("idle");
+      return reply({ ok: true, state });
+    case "new":
+      stopActive();
+      interrupt();
+      reset();
+      setState("idle");
+      return reply({ ok: true, state });
+    case "interview":
+      stopActive();
+      interrupt();
+      reset();
+      interviewing = true;
+      emit({ type: "interview", active: true });
+      ask("Please begin the orientation interview.");
+      return reply({ ok: true, state });
+    case "recent": {
+      const count = Math.min(Number(rest[0]) || 50, 500);
+      return reply({ ok: true, items: transcript.items.slice(-count).map(({ t, user, morgan }) => ({ t, user, morgan })) });
+    }
+    case "status":
+      return reply({
+        ok: true, state, name: cfg.name, model: cfg.ollama.model, oracle: cfg.oracle.model,
+        stt: Boolean(cfg.stt), tts: Boolean(cfg.tts), wakeWord: cfg.wakeWord, wakeEngine: spot ? "spotter" : "transcribe", voice: kokoroReady ? cfg.kokoroVoice : cfg.voice, engine: kokoroReady ? "kokoro" : "piper", interviewing, mcpTools: mcpTools.map((tool) => tool.function.name), topics: topics().map((topic) => topic.name),
+      });
+    case "watch":
+      watchers.add(socket);
+      socket.write(JSON.stringify({ type: "state", state }) + "\n");
+      return;
+    default:
+      return reply({ ok: false, error: `unknown command: ${command}` });
+  }
+}
+
+rmSync(SOCKET, { force: true });
+const server = createServer((socket) => {
+  let buffer = "";
+  let handled = false;
+  socket.setEncoding("utf8");
+  socket.on("data", (chunk) => {
+    if (handled) return;
+    buffer += chunk;
+    const newline = buffer.indexOf("\n");
+    if (newline < 0) return;
+    handled = true;
+    handle(buffer.slice(0, newline), socket);
+  });
+  socket.on("close", () => watchers.delete(socket));
+  socket.on("error", () => watchers.delete(socket));
+});
+server.listen(SOCKET, () => console.error(`heyclaude listening on ${SOCKET}`));
+startCanceller();
+startSpotter();
+// The canceller's microphone takes a moment to appear.
+if (cfg.wakeWord || interruptWord()) setTimeout(openMic, canceller ? 1500 : 0);
+connectMcpServers();
+
+// ---------------------------------------------------------------- hotkey
+//
+// A runtime bind, not a line in hyprland.conf: Hyprland forgets it whenever
+// its configuration is reloaded, so it is put back each time that happens.
+
+const CHAT_PANEL = "jpmoo/morgan:chat";
+
+function bindHotkey() {
+  if (!cfg.hotkey) return;
+  const shell = join(HOME, ".local", "bin", "noctalia");
+  execFile("hyprctl", ["--batch", `keyword unbind ${cfg.hotkey} ; keyword bind ${cfg.hotkey}, exec, ${shell} msg panel-toggle ${CHAT_PANEL}`], () => {});
+}
+
+function watchHyprland() {
+  const instance = process.env.HYPRLAND_INSTANCE_SIGNATURE;
+  if (!cfg.hotkey || !instance) return;
+  bindHotkey();
+  const events = connect(join(RUNTIME, "hypr", instance, ".socket2.sock"));
+  events.setEncoding("utf8");
+  events.on("data", (text) => { if (text.includes("configreloaded")) bindHotkey(); });
+  events.on("error", () => {});
+}
+watchHyprland();
+
+// A conversation nobody returns to still ends, and is still filed.
+setInterval(() => {
+  if (history.length && state === "idle" && Date.now() - lastActivity > cfg.idleResetMinutes * 60_000) reset();
+}, 60_000).unref();
+
+function shutdown() {
+  closeMic();
+  bindEscape(false);
+  canceller?.kill("SIGTERM");
+  kokoroHelper?.kill("SIGTERM");
+  stopSpeech();
+  stopOracle();
+  for (const client of mcpClients.values()) client.stop();
+  server.close();
+  rmSync(SOCKET, { force: true });
+  process.exit(0);
+}
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);

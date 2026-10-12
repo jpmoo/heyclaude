@@ -1,0 +1,10 @@
+{
+  "name": "Morgan",
+  "ollama": { "url": "http://192.168.0.244:11434", "model": "qwen3.6:35b-a3b" },
+  "oracle": { "model": "sonnet" },
+  "sttPrompt": "Morgan, the Oracle, Hyprland, Noctalia, Hermes Notes, Talaria.",
+  "mcpServers": {
+    "example-local": { "command": "node", "args": ["/path/to/server.js"] },
+    "example-remote": { "url": "https://example.org/mcp", "headers": { "Authorization": "Bearer ..." }, "allow": "read" }
+  }
+}
