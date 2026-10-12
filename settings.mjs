@@ -2,7 +2,7 @@
 // as it is made; the daemon is restarted once, on the way out.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import {
@@ -85,6 +85,7 @@ async function assistant() {
       { key: "style", label: "Manner of speaking", value: config.style ?? BASICS.style },
       { key: "interview", label: "Start the orientation interview" },
       { key: "memory", label: "What is remembered about you", value: `${topicFiles().length} topics` },
+      { key: "documents", label: "Documents kept in full", value: String(documentFiles().length) },
     ]);
     if (!choice) return;
     if (choice === "name") {
@@ -105,7 +106,36 @@ async function assistant() {
       console.log(`The interview has begun: answer aloud, or run ${bold("heyclaude chat")} to answer by typing.`);
     } else if (choice === "memory") {
       await memory();
+    } else if (choice === "documents") {
+      await documentsMenu();
     }
+  }
+}
+
+const DOCUMENTS = join(MEMORY, "documents");
+const documentFiles = () => (existsSync(DOCUMENTS) ? readdirSync(DOCUMENTS).filter((file) => file.endsWith(".document")).sort() : []);
+
+async function documentsMenu() {
+  for (;;) {
+    const files = documentFiles();
+    if (!files.length) return console.log(`Nothing is kept yet. Ask ${config.name ?? BASICS.name} to remember a file, by attaching it or naming one in a folder it may read.`);
+    const read = (file) => JSON.parse(readSealed(join(DOCUMENTS, file)));
+    const file = await menu("Documents kept in full", files.map((name) => {
+      const kept = read(name);
+      return { key: name, label: kept.title, value: `${kept.text.length} characters, from ${kept.source}, ${new Date(kept.t).toLocaleDateString()}` };
+    }));
+    if (!file) return;
+    const kept = read(file);
+    const choice = await menu(kept.title, [{ key: "view", label: "Read it" }, { key: "rename", label: "Rename it" }, { key: "delete", label: "Delete it" }]);
+    if (choice === "view") console.log(`\n${kept.text.trim()}`);
+    if (choice === "rename") {
+      const title = await ask("Title:", kept.title, kept.title);
+      if (title && title !== kept.title) {
+        rmSync(join(DOCUMENTS, file));
+        writeSealed(join(DOCUMENTS, `${title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60)}.document`), JSON.stringify({ ...kept, title }));
+      }
+    }
+    if (choice === "delete" && await yes(`Delete ${kept.title}?`)) rmSync(join(DOCUMENTS, file));
   }
 }
 
@@ -594,6 +624,31 @@ async function testServer(name, spec) {
   }
 }
 
+// ---------------------------------------------------------------- files
+
+async function filesMenu() {
+  for (;;) {
+    const folders = config.folders ?? [];
+    const choice = await menu(`Folders ${config.name ?? BASICS.name} may read ${dim("markdown, text, code, PDFs and pictures; never written to")}`, [
+      ...folders.map((folder) => ({ key: `drop:${folder}`, label: folder, value: existsSync(folder.replace(/^~/, process.env.HOME)) ? "" : "not found" })),
+      { key: "add", label: dim("Add a folder") },
+    ]);
+    if (!choice) return;
+    if (choice === "add") {
+      const folder = (await ask("Folder, for example ~/Documents/Notes:")).replace(/\/+$/, "");
+      if (!folder) continue;
+      const real = folder.replace(/^~/, process.env.HOME);
+      if (!existsSync(real) || !statSync(real).isDirectory()) { console.log("That is not a folder on this machine."); continue; }
+      if (real === process.env.HOME && !(await yes("That is your whole home folder, with everything in it. Allow it?"))) continue;
+      config.folders = [...new Set([...folders, folder])];
+      save();
+    } else if (await yes(`Stop ${config.name ?? BASICS.name} reading ${choice.slice(5)}?`)) {
+      config.folders = folders.filter((folder) => folder !== choice.slice(5));
+      save();
+    }
+  }
+}
+
 // ---------------------------------------------------------------- sight
 
 async function sightMenu() {
@@ -685,9 +740,10 @@ export async function run() {
       { key: "names", label: "Names and unusual words", value: `${Object.keys(config.pronunciations ?? {}).length} fixed` },
       { key: "mcp", label: "MCP servers", value: Object.keys(config.mcpServers ?? {}).join(", ") || "none" },
       { key: "listening", label: "Listening and hotkey", value: wake ? `"${wake}"` : "wake phrase off" },
+      { key: "files", label: "Files", value: (config.folders ?? []).join(", ") || "no folders" },
       { key: "sight", label: "Sight", value: (config.sight ?? BASICS.sight).join(", ") || "off" },
     ], "quit");
     if (!choice) finish();
-    await { assistant, ollama: ollamaMenu, oracle: oracleMenu, voice: voiceMenu, names: namesMenu, mcp: mcpMenu, listening: listeningMenu, sight: sightMenu }[choice]();
+    await { assistant, ollama: ollamaMenu, oracle: oracleMenu, voice: voiceMenu, names: namesMenu, mcp: mcpMenu, listening: listeningMenu, files: filesMenu, sight: sightMenu }[choice]();
   }
 }

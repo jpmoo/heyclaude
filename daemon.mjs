@@ -10,7 +10,8 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { connect, createServer } from "node:net";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, watchFile, writeFileSync } from "node:fs";
+import { basename, extname, resolve } from "node:path";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -98,6 +99,9 @@ const defaults = {
   followUpSeconds: BASICS.followUpSeconds,
   // What may be looked at when the user asks, and the camera to use. A picture
   // goes to the Ollama server and is then deleted; only its description is kept.
+  // Folders whose files the assistant may list, search and read by itself.
+  // A file attached in the chat window is read wherever it is.
+  folders: [],
   sight: BASICS.sight,
   camera: "/dev/video0",
   // {prompt} is sttPrompt: words whisper should expect, so names come out right.
@@ -140,6 +144,17 @@ const cfg = {
   ollama: { ...defaults.ollama, ...user.ollama },
   oracle: { ...defaults.oracle, ...user.oracle },
 };
+
+// Settings that are looked at each time they are used take effect as soon as
+// the file is saved, without waiting for the settings menu to be closed and
+// the daemon restarted. (Voices, servers and the microphone still need that.)
+const LIVE = ["folders", "sight", "pronunciations", "style", "followUpSeconds", "endSilenceMs", "recallScore", "consultLine", "wakeReply"];
+watchFile(configPath, { interval: 1000 }, () => {
+  try {
+    const saved = JSON.parse(readFileSync(configPath, "utf8"));
+    for (const key of LIVE) cfg[key] = key in saved ? saved[key] : defaults[key];
+  } catch { /* half-written, or gone: keep what we have */ }
+});
 
 const voiceFile = join(SPEECH, "voices", `${cfg.voice}.onnx`);
 let voiceRate = 22050;
@@ -196,8 +211,15 @@ const morganPrompt = () => [
       + " said so. When the user asks you to remember what someone or something looks like, call remember_picture at once."
       + ` Pictures you have saved for recognising people and things: ${pictures().map((picture) => picture.label).join(", ") || "none yet"}.`
     : "",
+  cfg.folders.length
+    ? `You may list, search and read the files in these folders of the user's: ${cfg.folders.join(", ")}. Do so when they ask about a file, a document or their notes.`
+    : "",
+  `Whole documents you have kept, to read with recall_document when a question is about one: ${documents().map((entry) => entry.title).join("; ") || "none yet"}.`,
+  "A document is kept only when you are told in this turn that it has been; never say you have kept or memorised one otherwise.",
   "Everything you and the user have ever said to each other is also kept, word for word. Passages from earlier",
-  "conversations that look relevant are shown below when there are any. Use search_conversations to look further,",
+  "conversations that look relevant are shown below when there are any; they say how things stood then, so anything",
+  "that can change (a calendar, tasks, the news) is fetched again with its tool, never repeated from them.",
+  "Use search_conversations to look further,",
   "by subject, by date or both, whenever the user refers to something said before that you cannot see.",
   `It is ${new Date().toLocaleString("en-US", { dateStyle: "full", timeStyle: "short" })}.`,
   interviewing ? INTERVIEW_PROMPT : "",
@@ -510,6 +532,220 @@ function forgetPicture(args) {
   return `The picture of ${label} is gone.`;
 }
 
+// ---------------------------------------------------------------- files
+
+const IMAGES = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]);
+const MOST = 150_000; // characters of one file put in front of the model
+
+const home = (path) => resolve(String(path).replace(/^~(?=\/|$)/, HOME));
+
+// The real location of a path, if it lies inside one of the allowed folders.
+function allowed(path) {
+  try {
+    const real = realpathSync(home(path));
+    return cfg.folders.some((folder) => {
+      const root = realpathSync(home(folder));
+      return real === root || real.startsWith(`${root}/`);
+    }) ? real : null;
+  } catch {
+    return null;
+  }
+}
+
+// A file as something the model can read: its text, or for a picture a
+// description of it.
+async function readDocument(path, question = "") {
+  const extension = extname(path).toLowerCase();
+  const size = statSync(path).size;
+  if (size > 30_000_000) return "The file is too large to read.";
+  let text;
+  if (IMAGES.has(extension)) {
+    const response = await fetch(`${cfg.ollama.url}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(120_000),
+      body: JSON.stringify({
+        model: cfg.ollama.model, stream: false, think: false, keep_alive: cfg.ollama.keepAlive,
+        messages: [{
+          role: "user",
+          content: `Describe this picture fully${question ? `, with this question in mind: "${question}"` : ""}. Quote exactly any text in it. Plain prose.`,
+          images: [readFileSync(path).toString("base64")],
+        }],
+      }),
+    });
+    if (!response.ok) throw new Error(`Ollama answered ${response.status}`);
+    return `(A picture. What it shows:) ${(await response.json()).message.content.trim()}`;
+  }
+  if (extension === ".pdf") {
+    text = (await run("pdftotext", ["-layout", path, "-"], { maxBuffer: 1 << 28 })).stdout;
+  } else {
+    const bytes = readFileSync(path);
+    if (bytes.subarray(0, 8000).includes(0)) return "This is not a text file, and not a kind of file that can be read.";
+    text = bytes.toString("utf8");
+  }
+  return text.length > MOST ? `${text.slice(0, MOST)}\n\n(The file goes on: only the first ${MOST} of its ${text.length} characters are shown.)` : text;
+}
+
+// Documents kept whole, on request: a recipe, a policy, a set of notes. One
+// sealed file each. The model sees their titles and reads one when it needs it.
+const DOCUMENTS = join(MEMORY, "documents");
+const documentPath = (title) => join(DOCUMENTS, `${slug(title)}.document`);
+
+function documents() {
+  if (!existsSync(DOCUMENTS)) return [];
+  return readdirSync(DOCUMENTS).filter((file) => file.endsWith(".document")).sort().map((file) => JSON.parse(readSealed(join(DOCUMENTS, file))));
+}
+
+function keepDocument(title, source, text) {
+  mkdirSync(DOCUMENTS, { recursive: true });
+  writeSealed(documentPath(title), JSON.stringify({ title, source, t: Date.now(), text }));
+  emit({ type: "memory", topic: "Documents", note: `kept "${title}" in full (${text.length} characters, from ${basename(source)})` });
+}
+
+let lastRead = null; // { path, text, t }: the file most recently read in this conversation
+
+// The best match for a few words among the names of files in the allowed folders.
+async function findByWords(hint) {
+  const wanted = [...new Set(words(hint).filter((word) => word.length >= 4 && !["file", "document", "recipe", "notes", "download", "downloads", "downloaded", "folder", "favorite", "favourite"].includes(word)))];
+  const pool = wanted.length ? wanted : words(hint).filter((word) => word.length >= 4);
+  const scores = new Map();
+  for (const folder of cfg.folders) {
+    for (const word of pool) {
+      const result = await run("find", [home(folder), "-type", "f", "-iname", `*${word}*`, "-not", "-path", "*/.*", "-not", "-path", "*/node_modules/*"], { maxBuffer: 1 << 24 }).catch((error) => ({ stdout: error.stdout ?? "" }));
+      for (const path of result.stdout.split("\n").filter(Boolean)) scores.set(path, (scores.get(path) ?? 0) + 1);
+    }
+  }
+  return [...scores.entries()].sort((a, b) => b[1] - a[1] || a[0].length - b[0].length)[0]?.[0] ?? null;
+}
+
+// As with looking: whether the user is asking for a document to be kept is
+// put as a narrow question, and the keeping is done here, so that "I've
+// saved it" is only ever said about something that was saved.
+const KEEP_WORDS = /\b(remember|keep|save|store|memori[sz]e|hold on to|file away|learn)\b/i;
+
+async function keepIntent(text, files) {
+  if (!KEEP_WORDS.test(text) || !(files.length || lastRead || cfg.folders.length)) return "";
+  let intent;
+  try {
+    const response = await fetch(`${cfg.ollama.url}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(30_000),
+      body: JSON.stringify({
+        model: cfg.ollama.model, stream: false, think: false, keep_alive: cfg.ollama.keepAlive,
+        format: {
+          type: "object",
+          properties: { keep: { type: "boolean" }, title: { type: "string" }, file: { type: "string" } },
+          required: ["keep", "title", "file"],
+        },
+        messages: [{
+          role: "system",
+          content: "A user is speaking to an assistant that can keep a whole document (a recipe, a guide, a set of notes) so as to have "
+            + "its full text later. Decide what the message asks. keep: true only if they want the contents of a document or file "
+            + "remembered or kept; false for remembering a simple fact, and for anything else. title: a short title for the document, "
+            + "such as Sourdough recipe. file: the name or path of the file if they give one, or the words they use to describe it; "
+            + `empty if they mean a file already attached or just read. ${files.length ? `Attached to this message: ${files.map((file) => basename(file)).join(", ")}.` : ""}`
+            + `${lastRead ? ` The file read most recently: ${basename(lastRead.path)}.` : ""}`,
+        }, { role: "user", content: text }],
+      }),
+    });
+    intent = JSON.parse((await response.json()).message.content);
+  } catch (error) {
+    console.error(`keep: ${error.message}`);
+    return "";
+  }
+  if (!intent.keep) return "";
+  const title = intent.title.trim() || "Document";
+  try {
+    let path = files[0] ? home(files[0]) : null;
+    if (!path && intent.file) path = allowed(intent.file) ?? await findByWords(`${intent.file} ${title}`);
+    if (!path && lastRead && Date.now() - lastRead.t < 15 * 60_000) path = lastRead.path;
+    if (!path && cfg.folders.length) path = await findByWords(title);
+    if (!path) return " You were asked to keep a document, but which file is meant could not be worked out, so nothing has been kept. Ask them which file.";
+    const content = await readDocument(path, text);
+    keepDocument(title, path, content);
+    lastRead = { path, text: content, t: Date.now() };
+    return ` You were asked to keep a document, and it has been done: the full text of ${path} is now kept under the title "${title}". `
+      + `Tell them so, and answer anything else they asked from it. Its contents:\n${content}`;
+  } catch (error) {
+    return ` You were asked to keep a document, but it failed (${error.message.split("\n")[0]}), so nothing has been kept. Say so.`;
+  }
+}
+
+const documentTools = () => (documents().length ? [{
+  type: "function",
+  function: {
+    name: "recall_document",
+    description: "Read the full text of a document you have kept.",
+    parameters: { type: "object", properties: { title: { type: "string", description: "A title from your kept documents" } }, required: ["title"] },
+  },
+}] : []);
+
+function recallDocument(args) {
+  const title = String(args.title ?? "");
+  const kept = documents();
+  const wanted = words(title);
+  const found = kept.find((entry) => slug(entry.title) === slug(title))
+    ?? kept.map((entry) => ({ entry, hits: wanted.filter((word) => words(entry.title).includes(word)).length })).sort((a, b) => b.hits - a.hits).find((match) => match.hits > 0)?.entry;
+  if (!found) return `There is no kept document called ${title}. You have: ${kept.map((entry) => entry.title).join(", ")}`;
+  emit({ type: "recall", topic: found.title });
+  return `${found.title} (kept ${new Date(found.t).toLocaleDateString()}, from ${basename(found.source)}):\n\n${found.text}`;
+}
+
+const fileTools = () => (cfg.folders.length ? [{
+  type: "function",
+  function: {
+    name: "list_folder",
+    description: "List what is in one of the user's folders you may read.",
+    parameters: { type: "object", properties: { path: { type: "string", description: "The folder" } }, required: ["path"] },
+  },
+}, {
+  type: "function",
+  function: {
+    name: "find_files",
+    description: "Find files by name anywhere under the folders you may read.",
+    parameters: { type: "object", properties: { name: { type: "string", description: "Part of the file's name" } }, required: ["name"] },
+  },
+}, {
+  type: "function",
+  function: {
+    name: "read_file",
+    description: "Read a file from the folders you may read: markdown, text, code, PDF, or a picture (which is described).",
+    parameters: {
+      type: "object",
+      properties: { path: { type: "string" }, question: { type: "string", description: "For a picture: what the user wants to know about it" } },
+      required: ["path"],
+    },
+  },
+}] : []);
+
+async function fileTool(name, args) {
+  try {
+    if (name === "find_files") {
+      const wanted = String(args.name ?? "").replace(/[*?\[\]]/g, "");
+      if (!wanted) return "No name given.";
+      const found = [];
+      for (const folder of cfg.folders) {
+        const result = await run("find", [home(folder), "-iname", `*${wanted}*`, "-not", "-path", "*/.*", "-not", "-path", "*/node_modules/*"], { maxBuffer: 1 << 24 }).catch((error) => ({ stdout: error.stdout ?? "" }));
+        found.push(...result.stdout.split("\n").filter(Boolean));
+      }
+      return found.length ? found.slice(0, 60).join("\n") + (found.length > 60 ? `\n(and ${found.length - 60} more)` : "") : "Nothing by that name.";
+    }
+    const path = allowed(args.path ?? "");
+    if (!path) return `That is outside the folders you may read, or is not there. You may read: ${cfg.folders.join(", ")}`;
+    if (name === "list_folder") {
+      const entries = readdirSync(path, { withFileTypes: true }).filter((entry) => !entry.name.startsWith("."));
+      return entries.slice(0, 300).map((entry) => (entry.isDirectory() ? `${entry.name}/` : entry.name)).join("\n") || "It is empty.";
+    }
+    if (statSync(path).isDirectory()) return "That is a folder; list it instead.";
+    const text = await readDocument(path, String(args.question ?? ""));
+    lastRead = { path, text, t: Date.now() };
+    return text;
+  } catch (error) {
+    return `That failed: ${error.message.split("\n")[0]}`;
+  }
+}
+
 // ---------------------------------------------------------------- events
 
 let state = "idle"; // idle | listening | transcribing | thinking | consulting | speaking
@@ -665,6 +901,7 @@ let acted = false; // something was put forward or carried out in this turn
 const CHANGE_ASKED = /\b(add|create|make|new|delete|remove|archive|unarchive|update|change|edit|rename|move|mark|complete|finish|send|reply|forward|schedule|reschedule|cancel|set|put|tag|assign|draft|post|save)\b/i;
 const CHANGE_CLAIMED = /\b(i've|i have|i just|i went ahead|has been|have been|is now|are now|it's been|all set|all done|taken care of|successfully)\b[^.?!]*\b(added|created|made|deleted|removed|archived|unarchived|updated|changed|edited|renamed|moved|marked|completed|sent|replied|forwarded|scheduled|rescheduled|cancelled|canceled|set|tagged|assigned|drafted|posted|saved|done)\b|\ball set\b|\bsuccessfully\b/i;
 const PERMISSION_ASKED = /\b(shall i|should i|want me to|would you like me to|do you want me to|like me to|is that (ok|okay|right|correct)|does that (work|sound)|sound (good|right)|go ahead|proceed|confirm)\b[^.!]*\?/i;
+const TIMELY = /\b(today|tonight|tomorrow|yesterday|now|currently|current|latest|newest|recent|this (morning|afternoon|evening|week|weekend|month|year)|next (week|month|year|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|on (monday|tuesday|wednesday|thursday|friday|saturday|sunday)|calendar|schedule|due|overdue|weather|news|price|score)\b/i;
 const YES = /^(yes|yeah|yep|yup|sure|ok|okay|alright|all right|right|correct|absolutely|definitely|please)?( ?(yes|please|do it|do that|go ahead|go for it|go on|confirm|confirmed|thats right|that is right|thats correct|sounds good|thats fine|fine))*( ?(please|thanks|thank you))?$/;
 
 // Called with the user's words at the start of each turn. Returns what the
@@ -745,6 +982,7 @@ async function mcpTool(name, args) {
       + "and ask them to say yes. It will be carried out for you when they do. Do not say it is done.";
   }
   emit({ type: "tool", name, args });
+  fresh = true;
   try {
     // A small model's context is easily flooded by one large result.
     return (await client.call(tool, args)).slice(0, 12_000);
@@ -767,6 +1005,7 @@ let began = 0; // when the conversation in progress started
 let unfiled = 0; // exchanges since memory was last brought up to date
 let recalled = []; // earlier exchanges shown to the model this turn
 let seen = ""; // what was looked at for this turn, before the model was asked
+let fresh = false; // this turn's answer drew on something live: a tool, the Oracle, a look
 
 transcript.reindex();
 
@@ -836,27 +1075,44 @@ let abort = null;
 let lastActivity = 0;
 
 // A typed turn is answered in text only; a spoken one is read aloud.
-async function ask(text, { typed = false } = {}) {
+async function ask(text, { typed = false, files = [] } = {}) {
   text = text.trim();
   interrupt();
   quiet = typed;
   if (typed) spokenTurn = false;
+  if (!text && files.length) text = files.length > 1 ? "Here are some files." : "Here is a file.";
   if (!text) return setState("idle");
   if (lastActivity && Date.now() - lastActivity > cfg.idleResetMinutes * 60_000) reset();
   const mine = ++turn;
   lastActivity = Date.now();
   began ||= lastActivity;
-  history.push({ role: "user", content: text });
-  emit({ type: "user", text });
+  // Attached files are read here and handed over with the message. The
+  // conversation carries their contents; the transcript keeps only their names.
+  const names = files.map((file) => basename(file));
+  emit({ type: "user", text: names.length ? `${text}\n\n${names.map((name) => `📎 ${name}`).join("\n")}` : text });
   setState("thinking");
+  let attached = "";
+  for (const file of files) {
+    let content;
+    try { content = await readDocument(home(file), text); } catch (error) { content = `(It could not be read: ${error.message.split("\n")[0]})`; }
+    if (mine !== turn) return;
+    attached += `\n\n[The user attached the file ${basename(file)}. Its contents:]\n${content}\n[End of ${basename(file)}]`;
+  }
+  history.push({ role: "user", content: text + attached });
+  if (names.length) text = `${text} [attached: ${names.join(", ")}]`;
   let spoke = false;
   const said = [];
   const told = [];
   const saw = [];
+  fresh = false;
   try {
-    const hits = await transcript.search({ query: text, to: began, limit: 3 });
-    if (process.env.HEYCLAUDE_DEBUG) console.error("recall", hits.map((hit) => `${hit.score.toFixed(2)} ${hit.item.user.slice(0, 40)}`));
-    recalled = hits.filter((hit) => hit.score >= cfg.recallScore);
+    const hits = await transcript.search({ query: text, to: began, limit: 6 });
+    if (process.env.HEYCLAUDE_DEBUG) console.error("recall", hits.map((hit) => `${hit.score.toFixed(2)} ${hit.item.live ? "live " : ""}${hit.item.user.slice(0, 40)}`));
+    // An old answer that came from a calendar, a task list, the web or the
+    // camera is a record of how things stood, not of how they stand. Shown
+    // unasked, it gets repeated in place of looking again; so it is not shown,
+    // and nothing is when the question is about now.
+    recalled = TIMELY.test(text) ? [] : hits.filter((hit) => hit.score >= cfg.recallScore && !hit.item.live).slice(0, 3);
     if (mine !== turn) return;
     acted = false;
     seen = await settleProposal(text);
@@ -865,6 +1121,8 @@ async function ask(text, { typed = false } = {}) {
     // until it is whole, so that a false "done" is never spoken.
     const guarded = changes.size > 0 && (CHANGE_ASKED.test(text) || YES.test(words(text).join(" ")));
     let corrected = false;
+    seen += await keepIntent(text, files);
+    if (mine !== turn) return;
     const intent = await sightIntent(text);
     if (mine !== turn) return;
     if (intent) {
@@ -930,6 +1188,12 @@ async function ask(text, { typed = false } = {}) {
             saw.push(result);
             result = `What you see:\n${result}`;
           }
+        } else if (call.function.name === "recall_document") {
+          result = recallDocument(call.function.arguments ?? {});
+        } else if (["list_folder", "find_files", "read_file"].includes(call.function.name)) {
+          emit({ type: "tool", name: call.function.name, args: call.function.arguments ?? {} });
+          result = await fileTool(call.function.name, call.function.arguments ?? {});
+          if (mine !== turn) return;
         } else if (call.function.name === "search_conversations") {
           result = await searchTool(call.function.arguments ?? {});
           if (mine !== turn) return;
@@ -944,6 +1208,7 @@ async function ask(text, { typed = false } = {}) {
           if (mine !== turn) return;
           emit({ type: "oracle", text: answer });
           told.push(answer);
+          fresh = true;
           result = `The Oracle answered as follows. Relay it briefly, and say that it is what the Oracle told you.\n\n${answer}`;
           setState("thinking");
         }
@@ -968,7 +1233,13 @@ async function ask(text, { typed = false } = {}) {
   lastActivity = Date.now();
   if (said.length) {
     unfiled++;
-    transcript.add({ user: text, morgan: said.join(" "), ...(saw.length ? { saw: saw.join(" ") } : {}), ...(told.length ? { oracle: told.join(" ") } : {}) });
+    transcript.add({
+      user: text,
+      morgan: said.join(" "),
+      ...(saw.length ? { saw: saw.join(" ") } : {}),
+      ...(told.length ? { oracle: told.join(" ") } : {}),
+      ...(fresh || saw.length || acted ? { live: true } : {}),
+    });
   }
   speakFlush();
   finishSpeaking();
@@ -986,7 +1257,7 @@ async function morgan(mine, onText) {
       stream: true,
       think: cfg.ollama.think,
       keep_alive: cfg.ollama.keepAlive,
-      tools: [...MORGAN_TOOLS, ...sightTools(), ...mcpTools],
+      tools: [...MORGAN_TOOLS, ...sightTools(), ...fileTools(), ...documentTools(), ...mcpTools],
       messages: [{ role: "system", content: morganPrompt() }, ...history],
     }),
   });
@@ -1589,6 +1860,14 @@ function handle(line, socket) {
       stopActive();
       ask(rest.join(" "), { typed: true });
       return reply({ ok: true, state });
+    case "ask": {
+      // A typed turn with files: one line of JSON, { text, files }.
+      let turnOf;
+      try { turnOf = JSON.parse(rest.join(" ")); } catch { return reply({ ok: false, error: "ask wants JSON: { text, files }" }); }
+      stopActive();
+      ask(String(turnOf.text ?? ""), { typed: true, files: (turnOf.files ?? []).map(String) });
+      return reply({ ok: true, state });
+    }
     case "stop":
       stopActive();
       interrupt();

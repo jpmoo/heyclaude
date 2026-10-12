@@ -105,5 +105,5 @@ export class Transcript {
 export function describe({ item }, limit = 400) {
   const when = new Date(item.t).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" });
   const clip = (text) => (text.length > limit ? `${text.slice(0, limit)}…` : text);
-  return `[${when}] User: ${clip(item.user)}\n  You: ${clip(item.morgan)}${item.saw ? `\n  You had looked and seen: ${clip(item.saw)}` : ""}${item.oracle ? `\n  The Oracle had told you: ${clip(item.oracle)}` : ""}`;
+  return `[${when}] User: ${clip(item.user)}\n  You${item.live ? " (from what a tool showed at the time; it may have changed)" : ""}: ${clip(item.morgan)}${item.saw ? `\n  You had looked and seen: ${clip(item.saw)}` : ""}${item.oracle ? `\n  The Oracle had told you: ${clip(item.oracle)}` : ""}`;
 }
