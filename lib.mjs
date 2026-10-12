@@ -19,6 +19,8 @@ export const VOICE_REPO = "https://huggingface.co/rhasspy/piper-voices/resolve/m
 // The settings a person is expected to change, and what they start as.
 export const BASICS = {
   name: "Morgan",
+  // What the assistant calls you, in speech and in its notes. null: "the user".
+  userName: null,
   // How the assistant talks, in your own words; it goes into its instructions.
   style: "Talk the way a friend would: relaxed and warm, with contractions like I'd, you're and it's, everyday words, and nothing stiff or formal.",
   ollama: { url: "http://192.168.0.244:11434", model: "qwen3.6:35b-a3b" },

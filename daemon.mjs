@@ -48,6 +48,7 @@ for (let waited = 0; waited < 90; waited += 2) {
 
 const defaults = {
   name: BASICS.name,
+  userName: BASICS.userName,
   style: BASICS.style,
   ollama: { ...BASICS.ollama, think: false, keepAlive: "30m" },
   oracle: {
@@ -148,7 +149,7 @@ const cfg = {
 // Settings that are looked at each time they are used take effect as soon as
 // the file is saved, without waiting for the settings menu to be closed and
 // the daemon restarted. (Voices, servers and the microphone still need that.)
-const LIVE = ["folders", "sight", "pronunciations", "style", "followUpSeconds", "endSilenceMs", "recallScore", "consultLine", "wakeReply"];
+const LIVE = ["userName", "folders", "sight", "pronunciations", "style", "followUpSeconds", "endSilenceMs", "recallScore", "consultLine", "wakeReply"];
 watchFile(configPath, { interval: 1000 }, () => {
   try {
     const saved = JSON.parse(readFileSync(configPath, "utf8"));
@@ -192,7 +193,9 @@ const morganPrompt = () => [
   "You keep a long-term memory about the user, organized into topics that you create and curate yourself. Only the",
   "topic list is shown to you; call recall to read a topic before answering anything it might bear on. When the user",
   "tells you something lasting about themselves, their people, work, projects, routines or preferences, save it with",
-  "remember straight away, without being asked and without making a speech about it. Keep the topics few, distinct",
+  "remember straight away, without being asked and without making a speech about it. Write every note in the third",
+  `person, about ${cfg.userName ?? "the user by name once you know it"}: never as I or me, which would read as being about you.`,
+  "Keep the topics few, distinct",
   "and tidy: use rewrite_topic to merge, split, rename, correct or delete them as you learn more. Prefer a handful of",
   "broad topics, such as About me, People, Work, Projects and Preferences, over one topic per fact, and give each new",
   "topic a description.",
@@ -276,7 +279,7 @@ const MORGAN_TOOLS = [{
       type: "object",
       properties: {
         topic: { type: "string", description: "An existing topic name, or a short name for a new one" },
-        note: { type: "string", description: "One self-contained fact, in a full sentence" },
+        note: { type: "string", description: "One self-contained fact, in a full sentence in the third person that names the user, as in Sam has a beagle called Pickle. Never I, me or my, and never the words the user" },
         description: { type: "string", description: "For a new topic: one line saying what belongs in it" },
       },
       required: ["topic", "note"],
@@ -833,7 +836,8 @@ function memoryTool(name, args) {
   if (name === "recall") {
     emit({ type: "recall", topic });
     if (!existing) return `There is no topic called ${topic}. Your topics:\n${topicList()}`;
-    return `${existing.name}: ${existing.description}\n${existing.notes.map((note) => `- ${note}`).join("\n")}`;
+    // Older notes were sometimes written in the user's own voice.
+    return `${existing.name}: ${existing.description}\n(These are notes about ${cfg.userName ?? "the user"}. Where one says I, me or my, it means them, not you.)\n${existing.notes.map((note) => `- ${note}`).join("\n")}`;
   }
   if (name === "remember") {
     const note = String(args.note ?? "").trim();
@@ -1042,7 +1046,8 @@ async function fileAway(turns) {
     role: "system",
     content: [
       `You are ${cfg.name}, looking back over a conversation you have just had with the user in order to keep your`,
-      "long-term memory of them up to date. Save anything lasting that is not already in memory: facts about them,",
+      `long-term memory of them up to date. Write each note in the third person about ${cfg.userName ?? "the user, by name if you know it"}, never as I.`,
+      "Save anything lasting that is not already in memory: facts about them,",
       "their people, work, projects, plans, routines and preferences, and decisions reached. Ignore small talk and",
       "anything that only mattered in the moment. Recall a topic before adding to it, so that you do not repeat what",
       "is there; use rewrite_topic to correct what has changed and to keep topics few and broad. When there is",

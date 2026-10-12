@@ -81,11 +81,11 @@ function foreground(command, args, options = {}) {
 async function assistant() {
   for (;;) {
     const choice = await menu("Assistant", [
-      { key: "name", label: "Name", value: config.name ?? BASICS.name },
+      { key: "name", label: "Its name", value: config.name ?? BASICS.name },
+      { key: "user", label: "Your name", value: config.userName ?? "not set" },
       { key: "style", label: "Manner of speaking", value: config.style ?? BASICS.style },
       { key: "interview", label: "Start the orientation interview" },
-      { key: "memory", label: "What is remembered about you", value: `${topicFiles().length} topics` },
-      { key: "documents", label: "Documents kept in full", value: String(documentFiles().length) },
+      { key: "memory", label: "Memory", value: `${topicFiles().length} topics, ${documentFiles().length} documents` },
     ]);
     if (!choice) return;
     if (choice === "name") {
@@ -93,6 +93,9 @@ async function assistant() {
       config.name = await ask("Name:", old);
       // The wake phrase follows the name unless it was set to something else.
       if ((config.wakeWord ?? BASICS.wakeWord) === `Hey ${old}`) config.wakeWord = `Hey ${config.name}`;
+      save();
+    } else if (choice === "user") {
+      config.userName = (await ask("What should it call you?", config.userName ?? "")) || null;
       save();
     } else if (choice === "style") {
       console.log("Describe how it should talk, in a sentence or two. Blank keeps the current wording; - goes back to the default.");
@@ -106,8 +109,7 @@ async function assistant() {
       console.log(`The interview has begun: answer aloud, or run ${bold("heyclaude chat")} to answer by typing.`);
     } else if (choice === "memory") {
       await memory();
-    } else if (choice === "documents") {
-      await documentsMenu();
+
     }
   }
 }
@@ -115,27 +117,29 @@ async function assistant() {
 const DOCUMENTS = join(MEMORY, "documents");
 const documentFiles = () => (existsSync(DOCUMENTS) ? readdirSync(DOCUMENTS).filter((file) => file.endsWith(".document")).sort() : []);
 
-async function documentsMenu() {
+// One kept document: read, rename or delete. The file it was copied from is
+// somewhere else and is never touched.
+async function documentMenu(file) {
   for (;;) {
-    const files = documentFiles();
-    if (!files.length) return console.log(`Nothing is kept yet. Ask ${config.name ?? BASICS.name} to remember a file, by attaching it or naming one in a folder it may read.`);
-    const read = (file) => JSON.parse(readSealed(join(DOCUMENTS, file)));
-    const file = await menu("Documents kept in full", files.map((name) => {
-      const kept = read(name);
-      return { key: name, label: kept.title, value: `${kept.text.length} characters, from ${kept.source}, ${new Date(kept.t).toLocaleDateString()}` };
-    }));
-    if (!file) return;
-    const kept = read(file);
-    const choice = await menu(kept.title, [{ key: "view", label: "Read it" }, { key: "rename", label: "Rename it" }, { key: "delete", label: "Delete it" }]);
+    const kept = JSON.parse(readSealed(join(DOCUMENTS, file)));
+    const choice = await menu(`${kept.title} ${dim(`kept ${new Date(kept.t).toLocaleDateString()} from ${kept.source}`)}`, [
+      { key: "view", label: "Read it" }, { key: "rename", label: "Rename it" }, { key: "delete", label: "Delete it" },
+    ]);
+    if (!choice) return;
     if (choice === "view") console.log(`\n${kept.text.trim()}`);
     if (choice === "rename") {
       const title = await ask("Title:", kept.title, kept.title);
-      if (title && title !== kept.title) {
-        rmSync(join(DOCUMENTS, file));
-        writeSealed(join(DOCUMENTS, `${title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60)}.document`), JSON.stringify({ ...kept, title }));
-      }
+      if (!title || title === kept.title) continue;
+      const renamed = `${title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60)}.document`;
+      rmSync(join(DOCUMENTS, file));
+      writeSealed(join(DOCUMENTS, renamed), JSON.stringify({ ...kept, title }));
+      file = renamed;
     }
-    if (choice === "delete" && await yes(`Delete ${kept.title}?`)) rmSync(join(DOCUMENTS, file));
+    if (choice === "delete") {
+      rmSync(join(DOCUMENTS, file));
+      console.log(`Deleted from memory. The original at ${kept.source} is untouched.`);
+      return;
+    }
   }
 }
 
@@ -151,16 +155,29 @@ function writeTopic(file, topic) {
   writeSealed(join(MEMORY, file), [`# ${topic.name}`, topic.description, "", ...topic.notes.map((note) => `- ${note}`), ""].join("\n"));
 }
 
+// Everything kept about the user in one place: topics of notes, whole
+// documents, and pictures.
 async function memory() {
   for (;;) {
     const files = topicFiles();
-    if (!files.length) return console.log("Nothing is remembered yet.");
-    const file = await menu("Memory", files.map((name) => {
-      const topic = readTopic(name);
-      return { key: name, label: topic.name, value: `${topic.notes.length} notes` };
-    }));
+    const documents = documentFiles();
+    const pictures = existsSync(PICTURES) ? readdirSync(PICTURES).filter((file) => file.endsWith(".picture")) : [];
+    if (!files.length && !documents.length && !pictures.length) return console.log("Nothing is remembered yet.");
+    const file = await menu(`Memory ${dim(MEMORY)}`, [
+      ...files.map((name) => {
+        const topic = readTopic(name);
+        return { key: name, label: topic.name, value: `${topic.notes.length} notes` };
+      }),
+      ...documents.map((name) => {
+        const kept = JSON.parse(readSealed(join(DOCUMENTS, name)));
+        return { key: `document:${name}`, label: kept.title, value: `whole document, ${kept.text.length} characters, from ${kept.source}` };
+      }),
+      ...(pictures.length ? [{ key: "pictures", label: "Pictures", value: `${pictures.length} kept for recognising people and things` }] : []),
+    ]);
     if (!file) return;
-    await topicMenu(file);
+    if (file === "pictures") await sightMenu();
+    else if (file.startsWith("document:")) await documentMenu(file.slice(9));
+    else await topicMenu(file);
   }
 }
 
@@ -185,12 +202,14 @@ async function topicMenu(file) {
       continue;
     } else {
       const index = Number(choice.slice(5));
-      const text = await ask("Edit the note, or clear the line to delete it:\n", "", topic.notes[index]);
-      if (text === topic.notes[index]) continue;
-      if (!text || text === "-") {
-        if (!(await yes("Delete this note?"))) continue;
+      const what = await menu(topic.notes[index], [{ key: "edit", label: "Edit" }, { key: "delete", label: "Delete" }]);
+      if (what === "delete") {
         topic.notes.splice(index, 1);
-      } else topic.notes[index] = text;
+      } else if (what === "edit") {
+        const text = await ask("Edit the note:\n", "", topic.notes[index]);
+        if (!text || text === topic.notes[index]) continue;
+        topic.notes[index] = text;
+      } else continue;
     }
     writeTopic(file, topic);
   }
@@ -734,6 +753,7 @@ export async function run() {
     const wake = "wakeWord" in config ? config.wakeWord : BASICS.wakeWord;
     const choice = await menu(`heyclaude settings ${dim(CONFIG)}`, [
       { key: "assistant", label: "Assistant", value: config.name ?? BASICS.name },
+      { key: "memory", label: "Memory", value: `${topicFiles().length} topics, ${documentFiles().length} documents` },
       { key: "ollama", label: "Ollama", value: `${ollama().model} at ${ollama().url}` },
       { key: "oracle", label: "The Oracle", value: oracleAccount() },
       { key: "voice", label: "Voice", value: engine() === "kokoro" ? `${kokoroVoice()} (Kokoro)` : `${currentVoice()} (Piper)` },
@@ -744,6 +764,6 @@ export async function run() {
       { key: "sight", label: "Sight", value: (config.sight ?? BASICS.sight).join(", ") || "off" },
     ], "quit");
     if (!choice) finish();
-    await { assistant, ollama: ollamaMenu, oracle: oracleMenu, voice: voiceMenu, names: namesMenu, mcp: mcpMenu, listening: listeningMenu, files: filesMenu, sight: sightMenu }[choice]();
+    await { assistant, memory, ollama: ollamaMenu, oracle: oracleMenu, voice: voiceMenu, names: namesMenu, mcp: mcpMenu, listening: listeningMenu, files: filesMenu, sight: sightMenu }[choice]();
   }
 }
