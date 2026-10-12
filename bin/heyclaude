@@ -25,6 +25,8 @@ if (!args.length || ["help", "-h", "--help"].includes(args[0])) {
     "heyclaude voice [name]          list voices | switch to one",
     "heyclaude login|logout|account  the Oracle's Claude login",
     "heyclaude status | watch        the daemon's state | its event stream",
+    "heyclaude tools                 the last few tool calls and what came back",
+    "heyclaude admin <json>          what the settings window uses: { op, args }",
   ].join("\n"));
   process.exit(args.length ? 0 : 2);
 }
@@ -90,6 +92,7 @@ if (args[0] === "chat") {
     else if (event.type === "memory") show(dim(event.rewritten ? `reorganized ${event.topic}` : `remembered under ${event.topic}: ${event.note}`));
     else if (event.type === "recall") show(dim(`recalling ${event.topic}`));
     else if (event.type === "error") show(`error: ${event.message}`);
+    else if (event.type === "new") { process.stdout.write("\x1b[2J\x1b[H"); input.prompt(true); }
     else if (event.type === "state" && event.state === "idle") waiting = false;
   });
   input.prompt();

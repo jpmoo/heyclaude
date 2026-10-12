@@ -9,6 +9,25 @@ description = "A face for the heyclaude voice assistant: a waveform that pops up
 tags = ["voice", "assistant"]
 dependencies = ["heyclaude"]
 
+[[setting]]
+key = "accent_source"
+type = "select"
+label_key = "settings.accent_source.label"
+description_key = "settings.accent_source.description"
+default = "custom"
+options = [
+  { value = "custom", label_key = "settings.accent_source.custom" },
+  { value = "theme", label_key = "settings.accent_source.theme" },
+]
+
+[[setting]]
+key = "accent"
+type = "color"
+label_key = "settings.accent.label"
+description_key = "settings.accent.description"
+default = "#6f9bb3"
+visible_when = { key = "accent_source", values = ["custom"] }
+
 [[service]]
 id = "link"
 entry = "service.luau"
@@ -21,12 +40,21 @@ entry = "widget.luau"
 id = "voice"
 entry = "voice.luau"
 width = 420
-height = 164
+height = 176
 position = "bottom_center"
 layer = "overlay"
 persistent = true
 dismiss_on_outside_click = false
 keyboard_focus = "none"
+
+[[panel]]
+id = "settings"
+entry = "settings.luau"
+width = 900
+height = 740
+placement = "floating"
+position = "center"
+keyboard_focus = "exclusive"
 
 [[panel]]
 id = "chat"

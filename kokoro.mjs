@@ -51,6 +51,8 @@ const args = process.argv.slice(2);
 if (args[0] === "--say") {
   const pcm = speak(load(british(args[1])), args.slice(3).join(" "), Number(args[1]), Number(args[2]) || 1);
   spawnSync("pw-play", ["--raw", "--rate", String(RATE), "--channels", "1", "--format", "s16", "-"], { input: pcm });
+} else if (args[0] === "--pcm") {
+  process.stdout.write(speak(load(british(args[1])), args.slice(3).join(" "), Number(args[1]), Number(args[2]) || 1));
 } else if (args[0] === "--time") {
   const started = Date.now();
   const tts = load();

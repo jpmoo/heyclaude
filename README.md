@@ -14,11 +14,13 @@ its own subscription login — and relays the answer.
 | `settings.mjs` | `heyclaude settings`: menus for everything in `~/.config/heyclaude/config.json`. |
 | `lib.mjs` | Paths, defaults, the Oracle's login, encryption. |
 | `history.mjs` | Every exchange, sealed, with embeddings for finding earlier ones. |
+| `admin.mjs` | What the settings window may ask of the daemon: `heyclaude admin {"op": ..., "args": ...}`. |
+| `speaker.mjs` | Whose voice is speaking, from taught voiceprints. |
 | `mcp.mjs` | A small MCP client (stdio and HTTP with a header key; no OAuth). |
 | `wake.mjs` | The wake-word spotter. |
 | `kokoro.mjs` | The Kokoro voice, kept loaded as a helper process. |
 | `keyring.py` | Fetches the data key from the login keyring. |
-| `noctalia/` | The Noctalia plugin: voice popup, chat window, bar icon. |
+| `noctalia/` | The Noctalia plugin: voice popup, chat window, settings window, bar icon. |
 | `systemd/` | The user unit. |
 
 ## What it needs, beyond this repository
@@ -29,6 +31,7 @@ Under `~/.local/share/heyclaude/`, none of it committed here:
 - `piper/` and `voices/*.onnx` (the lighter voice)
 - `kokoro-multi-lang-v1_0/` (the more natural voice)
 - `sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/` (wake word)
+- `speaker/nemo_en_titanet_small.onnx` (telling voices apart)
 
 Also: Node 22, `npm install` here, an Ollama server with a tool-calling chat
 model and an embedding model, the `claude` command, `pw-record`, `pw-play`,

@@ -1,1 +1,8 @@
-{}
+{
+  "settings.accent_source.label": "Accent colour",
+  "settings.accent_source.description": "Where the colour of the chat window and the voice popup comes from.",
+  "settings.accent_source.custom": "A colour of my own",
+  "settings.accent_source.theme": "The theme's colours",
+  "settings.accent.label": "Colour",
+  "settings.accent.description": "Used for the header, your messages, the waveform and the small activity lines."
+}

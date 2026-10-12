@@ -20,6 +20,8 @@ import { BASICS, KOKORO, KOKORO_VOICES, STARTER_TOPICS, readOnly, readSealed, to
 import { fileURLToPath } from "node:url";
 import { Transcript, describe } from "./history.mjs";
 import * as wake from "./wake.mjs";
+import { createAdmin } from "./admin.mjs";
+import * as voiceprint from "./speaker.mjs";
 
 const HOME = homedir();
 const CONFIG_HOME = join(HOME, ".config", "heyclaude");
@@ -92,6 +94,11 @@ const defaults = {
   // which costs far more in a room full of talk. The spotter falls back to
   // transcribing when it cannot be loaded or cannot spell the phrase.
   wakeEngine: "spotter",
+  // Once a voice has been taught (heyclaude settings), speech in any other
+  // voice is ignored. The score is how like the taught voice it must be, from
+  // 0 to 1; short remarks are held to a lower bar, there being less to go on.
+  knownVoicesOnly: true,
+  voiceThreshold: 0.4,
   wakeThreshold: 0.25,
   // Spoken when the wake word is heard with nothing after it.
   wakeReply: "Yes?",
@@ -149,7 +156,7 @@ const cfg = {
 // Settings that are looked at each time they are used take effect as soon as
 // the file is saved, without waiting for the settings menu to be closed and
 // the daemon restarted. (Voices, servers and the microphone still need that.)
-const LIVE = ["userName", "folders", "sight", "pronunciations", "style", "followUpSeconds", "endSilenceMs", "recallScore", "consultLine", "wakeReply"];
+const LIVE = ["knownVoicesOnly", "voiceThreshold", "userName", "folders", "sight", "pronunciations", "style", "followUpSeconds", "endSilenceMs", "recallScore", "consultLine", "wakeReply"];
 watchFile(configPath, { interval: 1000 }, () => {
   try {
     const saved = JSON.parse(readFileSync(configPath, "utf8"));
@@ -193,7 +200,9 @@ const morganPrompt = () => [
   "You keep a long-term memory about the user, organized into topics that you create and curate yourself. Only the",
   "topic list is shown to you; call recall to read a topic before answering anything it might bear on. When the user",
   "tells you something lasting about themselves, their people, work, projects, routines or preferences, save it with",
-  "remember straight away, without being asked and without making a speech about it. Write every note in the third",
+  "remember straight away, without being asked and without making a speech about it. What a tool, the Oracle or a",
+  "look shows you is not a memory: never save calendar entries, task lists, search results or what was on screen.",
+  "Write every note in the third",
   `person, about ${cfg.userName ?? "the user by name once you know it"}: never as I or me, which would read as being about you.`,
   "Keep the topics few, distinct",
   "and tidy: use rewrite_topic to merge, split, rename, correct or delete them as you learn more. File each note under",
@@ -638,14 +647,17 @@ async function keepIntent(text, files) {
         model: cfg.ollama.model, stream: false, think: false, keep_alive: cfg.ollama.keepAlive,
         format: {
           type: "object",
-          properties: { keep: { type: "boolean" }, title: { type: "string" }, file: { type: "string" } },
-          required: ["keep", "title", "file"],
+          properties: { keep: { type: "boolean" }, extract: { type: "boolean" }, title: { type: "string" }, file: { type: "string" } },
+          required: ["keep", "extract", "title", "file"],
         },
         messages: [{
           role: "system",
-          content: "A user is speaking to an assistant that can keep a whole document (a recipe, a guide, a set of notes) so as to have "
-            + "its full text later. Decide what the message asks. keep: true only if they want the contents of a document or file "
-            + "remembered or kept; false for remembering a simple fact, and for anything else. title: a short title for the document, "
+          content: "A user is speaking to an assistant that can do two things with a document. It can keep the whole text (a recipe, "
+            + "a guide) so as to have it word for word later; and it can read a document through and save the facts in it as separate "
+            + "notes in its memory. Decide what the message asks. keep: true only if they want the document itself, its contents or "
+            + "full text, remembered or kept. extract: true only if they want what the document says, the information or facts in it, "
+            + "learned, taken in or saved as memories or notes. Both are false for remembering a simple fact they state themselves, "
+            + "and for anything else. title: a short title for the document, "
             + "such as Sourdough recipe. file: the name or path of the file if they give one, or the words they use to describe it; "
             + `empty if they mean a file already attached or just read. ${files.length ? `Attached to this message: ${files.map((file) => basename(file)).join(", ")}.` : ""}`
             + `${lastRead ? ` The file read most recently: ${basename(lastRead.path)}.` : ""}`,
@@ -657,7 +669,7 @@ async function keepIntent(text, files) {
     console.error(`keep: ${error.message}`);
     return "";
   }
-  if (!intent.keep) return "";
+  if (!intent.keep && !intent.extract) return "";
   const title = intent.title.trim() || "Document";
   try {
     let path = files[0] ? home(files[0]) : null;
@@ -666,13 +678,82 @@ async function keepIntent(text, files) {
     if (!path && cfg.folders.length) path = await findByWords(title);
     if (!path) return " You were asked to keep a document, but which file is meant could not be worked out, so nothing has been kept. Ask them which file.";
     const content = await readDocument(path, text);
-    keepDocument(title, path, content);
     lastRead = { path, text: content, t: Date.now() };
-    return ` You were asked to keep a document, and it has been done: the full text of ${path} is now kept under the title "${title}". `
-      + `Tell them so, and answer anything else they asked from it. Its contents:\n${content}`;
+    // An attached file is already in front of the model; one found in a folder is not.
+    if (!files.length) did("read_file", { path }, content);
+    if (intent.keep) {
+      keepDocument(title, path, content);
+      did("keep_document", { title, file: path }, `Done, just now: the full text of ${basename(path)} is kept under the title "${title}".`);
+    }
+    if (intent.extract) {
+      const filed = await learnFrom(content, basename(path));
+      const total = Object.values(filed).reduce((sum, notes) => sum + notes.length, 0);
+      did("save_document_as_memories", { file: path }, total
+        ? `Done, just now: ${total} new notes saved from ${basename(path)}.\n`
+          + Object.entries(filed).map(([topic, notes]) => `${topic}:\n${notes.map((note) => `- ${note}`).join("\n")}`).join("\n")
+          + "\nTell the user how many were saved and under which topics, with an example or two, and that they can look them over and correct them in settings under Memory."
+        : `Nothing was saved: everything in ${basename(path)} is either held already or not worth a note.`);
+    }
+    return "";
   } catch (error) {
     return ` You were asked to keep a document, but it failed (${error.message.split("\n")[0]}), so nothing has been kept. Say so.`;
   }
+}
+
+// Read a document through and file what it says as notes. The model is asked
+// for the facts as a list, each with a topic chosen from those that exist;
+// the saving is done here, and only notes not already held are added.
+async function learnFrom(content, source) {
+  const names = topics().map((topic) => topic.name);
+  const who = cfg.userName ?? "the user";
+  const found = [];
+  for (let at = 0; at < content.length && at < 120_000; at += 7000) {
+    const response = await fetch(`${cfg.ollama.url}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(120_000),
+      body: JSON.stringify({
+        model: cfg.ollama.model, stream: false, think: false, keep_alive: cfg.ollama.keepAlive,
+        format: {
+          type: "object",
+          properties: {
+            notes: {
+              type: "array",
+              items: { type: "object", properties: { topic: { type: "string", enum: names }, note: { type: "string" } }, required: ["topic", "note"] },
+            },
+          },
+          required: ["notes"],
+        },
+        messages: [{
+          role: "system",
+          content: `You keep a memory about ${who}, in notes filed under these topics:\n`
+            + topics().map((topic) => `- ${topic.name}: ${topic.description}`).join("\n")
+            + `\n\n${who} has given you part of a document (${source}) and asked you to save what it says. Pull out each fact worth `
+            + `having later as one self-contained sentence in the third person, naming ${who} where it is about them and naming `
+            + "other people and things in full, so that it makes sense on its own with the document gone. Keep exact names, numbers "
+            + "and dates. One fact to a note; no headings, no summaries of the document, nothing that is only filler. Give each the "
+            + "topic whose description it fits.",
+        }, { role: "user", content: content.slice(at, at + 7500) }],
+      }),
+    });
+    if (!response.ok) throw new Error(`Ollama answered ${response.status}`);
+    found.push(...(JSON.parse((await response.json()).message.content).notes ?? []));
+  }
+  const filed = {};
+  const today = new Date().toISOString().slice(0, 10);
+  const plain = (note) => words(note.replace(/\(\d{4}-\d{2}-\d{2}\)\s*$/, "")).join(" ");
+  for (const name of names) {
+    const topic = readTopic(name);
+    const held = new Set(topic.notes.map(plain));
+    const fresh = found.filter((entry) => entry.topic === name).map((entry) => String(entry.note).replace(/\s+/g, " ").trim())
+      .filter((note) => note && !held.has(plain(note)) && held.add(plain(note)));
+    if (!fresh.length) continue;
+    writeTopic({ ...topic, notes: [...topic.notes, ...fresh.map((note) => `${note} (${today})`)] });
+    filed[name] = fresh;
+  }
+  const total = Object.values(filed).reduce((sum, notes) => sum + notes.length, 0);
+  if (total) emit({ type: "memory", topic: Object.keys(filed).join(", "), note: `${total} notes from ${source}` });
+  return filed;
 }
 
 const documentTools = () => (documents().length ? [{
@@ -877,11 +958,15 @@ function memoryTool(name, args) {
 const mcpClients = new Map();
 let mcpTools = []; // in Ollama's tool format, named server__tool
 
+const mcpAll = new Map(); // per server: every tool it offers, or why it could not be reached
+
 async function connectMcpServers() {
   for (const [name, spec] of Object.entries(cfg.mcpServers)) {
     const client = new McpClient(name, spec);
     try {
-      const tools = (await client.start()).filter((tool) => toolAllowed(spec, tool));
+      const offered = await client.start();
+      mcpAll.set(name, { tools: offered });
+      const tools = offered.filter((tool) => toolAllowed(spec, tool));
       mcpClients.set(name, client);
       for (const tool of tools) {
         if (!readOnly(tool)) changes.add(`${name}__${tool.name}`);
@@ -897,15 +982,30 @@ async function connectMcpServers() {
       console.error(`mcp: ${name} connected, ${tools.length} tools`);
     } catch (error) {
       client.stop();
+      mcpAll.set(name, { error: error.message });
       fail(`mcp: ${name} failed to connect: ${error.message}`);
     }
   }
+}
+
+// Drop every connection and make them again from the saved settings: how a
+// change made in the settings window takes effect without a restart.
+async function reconnectMcp() {
+  for (const client of mcpClients.values()) client.stop();
+  mcpClients.clear();
+  mcpAll.clear();
+  changes.clear();
+  mcpTools = [];
+  proposals = [];
+  try { cfg.mcpServers = JSON.parse(readFileSync(configPath, "utf8")).mcpServers ?? {}; } catch { /* keep the ones we had */ }
+  await connectMcpServers();
 }
 
 // A tool that changes something is not run when the model calls it. The call
 // is held as a proposal; the model is told to say what it proposes and ask;
 // and it is run here, not by the model, once the user's next words are a
 // plain yes. The model's word that the user agreed is never what decides.
+const toolLog = []; // the last few tool calls and the start of what came back
 const changes = new Set(); // names of the tools that change things
 let proposals = []; // [{ name, args }], all put forward in the same turn
 let acted = false; // something was put forward or carried out in this turn
@@ -913,6 +1013,7 @@ let acted = false; // something was put forward or carried out in this turn
 const CHANGE_ASKED = /\b(add|create|make|new|delete|remove|archive|unarchive|update|change|edit|rename|move|mark|complete|finish|send|reply|forward|schedule|reschedule|cancel|set|put|tag|assign|draft|post|save)\b/i;
 const CHANGE_CLAIMED = /\b(i've|i have|i just|i went ahead|has been|have been|is now|are now|it's been|all set|all done|taken care of|successfully)\b[^.?!]*\b(added|created|made|deleted|removed|archived|unarchived|updated|changed|edited|renamed|moved|marked|completed|sent|replied|forwarded|scheduled|rescheduled|cancelled|canceled|set|tagged|assigned|drafted|posted|saved|done)\b|\ball set\b|\bsuccessfully\b/i;
 const PERMISSION_ASKED = /\b(shall i|should i|want me to|would you like me to|do you want me to|like me to|is that (ok|okay|right|correct)|does that (work|sound)|sound (good|right)|go ahead|proceed|confirm)\b[^.!]*\?/i;
+const LOOKUP_ASKED = /\b(my|the) (calendar|schedule|agenda|diary|tasks?|task list|to-?do( list)?s?|meetings?|appointments?|events?|projects?|notes?|inbox)\b|\b(what's|what is|anything|what do i have) (on|due|scheduled|planned|coming up)\b/i;
 const TIMELY = /\b(today|tonight|tomorrow|yesterday|now|currently|current|latest|newest|recent|this (morning|afternoon|evening|week|weekend|month|year)|next (week|month|year|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|on (monday|tuesday|wednesday|thursday|friday|saturday|sunday)|calendar|schedule|due|overdue|weather|news|price|score)\b/i;
 const YES = /^(yes|yeah|yep|yup|sure|ok|okay|alright|all right|right|correct|absolutely|definitely|please)?( ?(yes|please|do it|do that|go ahead|go for it|go on|confirm|confirmed|thats right|that is right|thats correct|sounds good|thats fine|fine))*( ?(please|thanks|thank you))?$/;
 
@@ -934,15 +1035,15 @@ async function settleProposal(text) {
     return `You had proposed: ${list}. The user did not plainly agree, so NONE of it has been done and the proposal is dropped. `
       + "If they still want it, or want it changed, call the tools again to propose it afresh.";
   }
-  const results = [];
   for (const { name, args } of waiting) {
     emit({ type: "confirm", name, done: true });
     const [server, tool] = name.split(/__(.*)/s);
-    try { results.push(`${name}: ${(await mcpClients.get(server).call(tool, args)).slice(0, 4000)}`); } catch (error) { results.push(`${name}: it failed: ${error.message}`); }
+    let result;
+    try { result = (await mcpClients.get(server).call(tool, args)).slice(0, 4000); } catch (error) { result = `It failed: ${error.message}`; }
+    did(name, args, `Carried out just now, on the user's yes. ${result}`);
   }
   acted = true;
-  return `The user has just agreed, so this has now been carried out for you: ${list}. Do not call those tools again. `
-    + `Tell them briefly how it went. The results: ${results.join("; ")}`;
+  return "What the user agreed to has just been carried out, as the results above show. Do not call those tools again; tell them briefly how it went.";
 }
 
 // The question put to the user about a proposal. The model that made the
@@ -995,12 +1096,18 @@ async function mcpTool(name, args) {
   }
   emit({ type: "tool", name, args });
   fresh = true;
+  let result;
   try {
     // A small model's context is easily flooded by one large result.
-    return (await client.call(tool, args)).slice(0, 12_000);
+    result = (await client.call(tool, args)).slice(0, 12_000);
   } catch (error) {
-    return `The tool failed: ${error.message}`;
+    result = `The tool failed: ${error.message}`;
   }
+  // Kept in memory only, for `heyclaude tools`: when an answer is wrong, this
+  // says whether the tool was asked the wrong thing or answered it wrongly.
+  toolLog.push({ t: Date.now(), name, args, result: result.slice(0, 400) });
+  if (toolLog.length > 40) toolLog.shift();
+  return result;
 }
 
 // ---------------------------------------------------------------- Morgan
@@ -1018,13 +1125,16 @@ let unfiled = 0; // exchanges since memory was last brought up to date
 let recalled = []; // earlier exchanges shown to the model this turn
 let seen = ""; // what was looked at for this turn, before the model was asked
 let fresh = false; // this turn's answer drew on something live: a tool, the Oracle, a look
+const lookups = new WeakSet(); // the user messages of turns answered from something live
 
 seedTopics();
 transcript.reindex();
 
 // A conversation interrupted by a restart carries on where it left off.
 for (const item of transcript.since(Date.now() - cfg.idleResetMinutes * 60_000)) {
-  history.push({ role: "user", content: item.user }, { role: "assistant", content: item.morgan });
+  const restored = { role: "user", content: item.user };
+  if (item.live) lookups.add(restored);
+  history.push(restored, { role: "assistant", content: item.morgan });
   began ||= item.t;
   unfiled++;
 }
@@ -1047,9 +1157,15 @@ async function searchTool(args) {
 // When a conversation is over, read it back and file what should last. In the
 // moment Morgan saves what it notices; this catches what it did not.
 async function fileAway(turns) {
+  // Answers that came from a lookup are left out: a day's calendar or a task
+  // list is not something to remember, and read back it looks as if it were.
+  let lookedUp = false;
   const text = turns
     .filter((message) => message.role !== "tool" && message.content)
-    .map((message) => `${message.role === "user" ? "User" : cfg.name}: ${message.content}`)
+    .map((message) => {
+      if (message.role === "user") { lookedUp = lookups.has(message); return `User: ${message.content.slice(0, 2000)}`; }
+      return lookedUp ? `${cfg.name}: (answered by looking something up; nothing in the answer is to be remembered)` : `${cfg.name}: ${message.content}`;
+    })
     .join("\n");
   const messages = [{
     role: "system",
@@ -1057,7 +1173,9 @@ async function fileAway(turns) {
       `You are ${cfg.name}, looking back over a conversation you have just had with the user in order to keep your`,
       `long-term memory of them up to date. Write each note in the third person about ${cfg.userName ?? "the user, by name if you know it"}, never as I.`,
       "Save anything lasting that is not already in memory: facts about them,",
-      "their people, work, projects, plans, routines and preferences, and decisions reached. Ignore small talk and",
+      "their people, work, projects, plans, routines and preferences, and decisions reached. Save only what the user",
+      "said about themselves: a question they asked is not a fact about them, and neither is what a calendar, task list",
+      "or search showed. Ignore small talk and",
       "anything that only mattered in the moment. Recall a topic before adding to it, so that you do not repeat what",
       "is there. File each note under the topic whose description it fits, not all under one. Use rewrite_topic to correct",
       "what has changed, and when a topic has grown past about twenty notes, to split it: keep part, and remember the rest",
@@ -1114,7 +1232,8 @@ async function ask(text, { typed = false, files = [] } = {}) {
     if (mine !== turn) return;
     attached += `\n\n[The user attached the file ${basename(file)}. Its contents:]\n${content}\n[End of ${basename(file)}]`;
   }
-  history.push({ role: "user", content: text + attached });
+  const asked = { role: "user", content: text + attached };
+  history.push(asked);
   if (names.length) text = `${text} [attached: ${names.join(", ")}]`;
   let spoke = false;
   const said = [];
@@ -1136,7 +1255,12 @@ async function ask(text, { typed = false, files = [] } = {}) {
     // Where the user may be asking for a change, the answer is held back
     // until it is whole, so that a false "done" is never spoken.
     const guarded = changes.size > 0 && (CHANGE_ASKED.test(text) || YES.test(words(text).join(" ")));
+    // A question about the user's own calendar, tasks or notes cannot be
+    // answered without looking them up; an answer given without a tool call
+    // is held back and sent round again.
+    const lookup = mcpTools.length > 0 && LOOKUP_ASKED.test(text);
     let corrected = false;
+    let called = false;
     seen += await keepIntent(text, files);
     if (mine !== turn) return;
     const intent = await sightIntent(text);
@@ -1146,17 +1270,34 @@ async function ask(text, { typed = false, files = [] } = {}) {
       const view = await look(intent.look, { question: text });
       if (mine !== turn) return;
       saw.push(view);
-      seen += ` For this request you have just looked at the ${intent.look}, and this is what you saw: ${view}`;
+      did(SIGHT[intent.look].tool, { question: text }, `What you see:\n${view}`);
       if (intent.remember) {
-        const kept = await rememberPicture({ label: intent.label || "the user", source: intent.look });
+        const label = intent.label || cfg.userName || "the user";
+        const kept = await rememberPicture({ label, source: intent.look });
         if (mine !== turn) return;
-        seen += ` You were asked to keep the picture, and the result was: ${kept}`;
+        did("remember_picture", { label, source: intent.look }, kept);
       }
     }
     // Morgan may use its tools several times in a turn, but not for ever.
     for (let round = 0; round < 8; round++) {
-      const reply = await morgan(mine, (delta) => { if (!guarded) { spoke = true; speakDelta(delta); } });
+      let draft = "";
+      let shown = 0;
+      const reply = await morgan(mine, (delta) => {
+        if (guarded || lookup) return; // held back until it is known to be true
+        spoke = true;
+        speakDelta(delta);
+        // The answer so far, for the chat window to show as it is written.
+        draft += delta;
+        if (Date.now() - shown > 120) { shown = Date.now(); emit({ type: "partial", text: draft }); }
+      });
       if (mine !== turn) return;
+      called ||= Boolean(reply.tool_calls?.length);
+      if (lookup && !called && !corrected) {
+        corrected = true;
+        seen += " You have just drafted an answer about the user's calendar, tasks or notes without looking anything up, so it"
+          + " cannot be right. Call the tool that holds it now, and answer from what comes back.";
+        continue;
+      }
       if (guarded && !acted && !reply.tool_calls?.length && CHANGE_CLAIMED.test(reply.content)) {
         // It says it did something and nothing was done. Once, it is told so
         // and asked again; after that the user is simply told the truth.
@@ -1180,7 +1321,7 @@ async function ask(text, { typed = false, files = [] } = {}) {
         said.push(reply.content);
         emit({ type: "assistant", text: reply.content });
         // A held-back answer is spoken now, unless a proposal's question is about to replace it.
-        if (guarded && !reply.tool_calls?.length) speakDelta(`${reply.content} `);
+        if ((guarded || lookup) && !reply.tool_calls?.length) speakDelta(`${reply.content} `);
       }
       if (!reply.tool_calls?.length) break;
       speakFlush();
@@ -1213,6 +1354,10 @@ async function ask(text, { typed = false, files = [] } = {}) {
         } else if (call.function.name === "search_conversations") {
           result = await searchTool(call.function.arguments ?? {});
           if (mine !== turn) return;
+        } else if (call.function.name === "remember" && fresh && !KEEP_WORDS.test(text)) {
+          // What tomorrow's calendar holds is not a fact about the user.
+          result = "Not saved. This turn was answered from a lookup, and what a lookup returns is how things stand today, not "
+            + "something to remember about the user. Only what they tell you about themselves is.";
         } else if (call.function.name !== "consult_oracle") {
           result = memoryTool(call.function.name, call.function.arguments ?? {});
         } else {
@@ -1247,6 +1392,7 @@ async function ask(text, { typed = false, files = [] } = {}) {
     fail(`${cfg.name}: ${error.message}`);
   }
   lastActivity = Date.now();
+  if (fresh || saw.length || acted) lookups.add(asked);
   if (said.length) {
     unfiled++;
     transcript.add({
@@ -1311,6 +1457,19 @@ function reset() {
   interviewing = false;
   stopOracle();
   lastActivity = 0;
+}
+
+// Something the daemon did on the model's behalf, before asking it for its
+// answer: looking, keeping a document, carrying out an agreed change. It is
+// put into the conversation as a tool call the model made and the result that
+// came back. Told about it any other way (a line in its instructions, say),
+// the model takes it for something from an earlier turn, and answers "I had
+// already saved that" about a thing saved a moment ago.
+function did(name, args, result) {
+  history.push(
+    { role: "assistant", content: "", tool_calls: [{ function: { name, arguments: args } }] },
+    { role: "tool", tool_name: name, content: result },
+  );
 }
 
 // Abandon whatever is in flight: speech, Morgan's stream, a consultation.
@@ -1585,6 +1744,41 @@ function startCanceller() {
     + ` source.props = { node.name = ${CLEAN_MIC} node.description = "heyclaude microphone (echo cancelled)" priority.session = 1 } }\n`);
 }
 
+// Whose voice: null until a model is there to tell.
+let voices = null;
+const voiceLog = []; // recent checks, for tuning: { t, seconds, name, score, ok }
+let enrolling = null; // { name, vectors, want } while a voice is being taught
+let recent = []; // the last two seconds from the microphone
+
+function startVoices() {
+  if (!voiceprint.available()) return;
+  try { voices = voiceprint.verifier(); } catch (error) { console.error(`voices: ${error.message}`); }
+}
+
+// Is this speech in a voice that has been taught? True when none has.
+function recognised(pcm) {
+  if (!voices || !cfg.knownVoicesOnly || !voices.enrolled.length) return true;
+  const seconds = pcm.length / 32000;
+  const { name, score } = voices.whose(pcm);
+  const ok = score >= cfg.voiceThreshold - (seconds < 1.2 ? 0.15 : 0);
+  voiceLog.push({ t: Date.now(), seconds: Number(seconds.toFixed(1)), name, score: Number(score.toFixed(2)), ok });
+  if (voiceLog.length > 30) voiceLog.shift();
+  emit({ type: "voice", name: ok ? name : null, score: Number(score.toFixed(2)) });
+  return ok;
+}
+
+// One more sample of the voice being taught; the voiceprint is saved after the last.
+function enrolStep(pcm) {
+  const taught = enrolling;
+  if (pcm.length / 32000 >= 1.5) taught.vectors.push(voices.embed(pcm));
+  emit({ type: "enroll", name: taught.name, count: taught.vectors.length, want: taught.want });
+  if (taught.vectors.length < taught.want) return startActive(20);
+  enrolling = null;
+  voiceprint.saveVoiceprint(taught.name, taught.vectors);
+  voices.load();
+  stopActive();
+}
+
 let spot = null;
 
 function startSpotter() {
@@ -1640,12 +1834,17 @@ function onFrame(frame) {
   for (let i = 0; i < FRAME; i += 2) sum += frame.readInt16LE(i) ** 2;
   const level = Math.sqrt(sum / (FRAME / 2));
   if (calibrating) { floor += level / 10; calibrating--; return; }
+  recent.push(frame);
+  if (recent.length > 66) recent.shift();
   if (!active && state === "transcribing") return resetUtterance();
   if (spot && !active) {
     const hit = spot.feed(frame);
     if (hit && process.env.HEYCLAUDE_DEBUG) console.error(`spotter: "${hit}" state=${state} utterance=${Boolean(utterance)} checking=${checkingWake}`);
     if (hit && busy()) {
       // Either word cuts an answer short; what follows is the user's turn.
+      // There is no whole utterance yet to judge the voice by, only the last
+      // couple of seconds.
+      if (!recognised(Buffer.concat(recent))) return;
       emit({ type: "wake" });
       return startActive(cfg.noSpeechSeconds);
     }
@@ -1675,6 +1874,7 @@ function onFrame(frame) {
     loudRun = loud ? loudRun + 1 : 0;
     if (loudRun >= 5) utterance = { frames: preroll, quietMs: 0, t: Date.now() };
     else if (active && Date.now() - active.since > active.patience * 1000) {
+      if (enrolling) { emit({ type: "enroll", name: enrolling.name, cancelled: true }); enrolling = null; }
       // Nothing more came: what was heard with the interruption is the whole turn.
       const { said } = active;
       stopActive(said ? "transcribing" : "idle");
@@ -1695,8 +1895,12 @@ function endUtterance() {
   const spotted = wakeHit >= utterance.t - 600;
   if (process.env.HEYCLAUDE_DEBUG) console.error(`utterance: ${(pcm.length / 32000).toFixed(1)}s state=${state} active=${Boolean(active)} spotted=${spotted} checking=${checkingWake}`);
   resetUtterance();
-  if (active) {
+  if (active && enrolling) {
+    enrolStep(pcm);
+  } else if (active) {
     const { said } = active;
+    // Someone else answering in the user's place is not the user's turn.
+    if (!recognised(pcm)) return stopActive();
     stopActive("transcribing");
     transcribe(pcm).then((text) => { if (state === "transcribing") heard(`${said} ${text}`.trim()); });
   } else if (busy()) {
@@ -1759,6 +1963,8 @@ async function checkWake(pcm, spotted = false) {
     // The spotter heard the phrase but the transcript spells it some other
     // way: take it to be the opening words, and the rest to be the request.
     command ??= spotted ? opening.split(/\s+/).slice(words(cfg.wakeWord).length).join(" ") : "";
+    // A bare wake word is too short to tell a voice by; what is said next is checked.
+    if (command && !recognised(pcm)) return;
     emit({ type: "wake" });
     if (command) heard(command);
     else acknowledge();
@@ -1885,6 +2091,7 @@ function handle(line, socket) {
       return reply({ ok: true, state });
     }
     case "stop":
+      enrolling = null;
       stopActive();
       interrupt();
       proposals = [];
@@ -1895,6 +2102,7 @@ function handle(line, socket) {
       stopActive();
       interrupt();
       reset();
+      emit({ type: "new" });
       setState("idle");
       return reply({ ok: true, state });
     case "interview":
@@ -1909,6 +2117,23 @@ function handle(line, socket) {
       const count = Math.min(Number(rest[0]) || 50, 500);
       return reply({ ok: true, items: transcript.items.slice(-count).map(({ t, user, morgan }) => ({ t, user, morgan })) });
     }
+    case "enroll":
+      try { enroll(rest.join(" ").trim()); } catch (error) { return reply({ ok: false, error: error.message }); }
+      return reply({ ok: true, state });
+    case "voices":
+      return reply({ ok: true, ...voicesStatus() });
+    case "forget-voice":
+      forgetVoice(rest.join(" "));
+      return reply({ ok: true, ...voicesStatus() });
+    case "admin": {
+      // The settings window's requests: { op, args } in, JSON out.
+      let request;
+      try { request = JSON.parse(rest.join(" ")); } catch { return reply({ ok: false, error: "admin wants JSON: { op, args }" }); }
+      admin(String(request.op), request.args ?? {}).then(reply);
+      return;
+    }
+    case "tools":
+      return reply({ ok: true, calls: toolLog });
     case "status":
       return reply({
         ok: true, state, name: cfg.name, model: cfg.ollama.model, oracle: cfg.oracle.model,
@@ -1922,6 +2147,33 @@ function handle(line, socket) {
       return reply({ ok: false, error: `unknown command: ${command}` });
   }
 }
+
+// Teach a voice: the next six things said are taken as samples of it.
+function enroll(name) {
+  if (!voices) throw new Error("the voice model is not installed");
+  if (!name) throw new Error("whose voice is it?");
+  interrupt();
+  enrolling = { name, vectors: [], want: 6 };
+  startActive(20);
+}
+
+function forgetVoice(name) {
+  voiceprint.removeVoiceprint(name);
+  voices?.load();
+}
+
+const voicesStatus = () => ({
+  installed: Boolean(voices), enrolled: voices?.enrolled ?? [], only: cfg.knownVoicesOnly, threshold: cfg.voiceThreshold, checks: voiceLog,
+});
+
+const admin = createAdmin({
+  cfg, defaults, LIVE, interruptWord,
+  topics, readTopic, writeTopic, topicPath, slug,
+  documents, documentPath, pictures, picturePath,
+  mcpAll, reconnectMcp, enroll, forgetVoice, voicesStatus,
+  // Settings the running daemon cannot simply pick up: start again, once the answer has gone.
+  restartSoon: () => setTimeout(() => spawn("systemctl", ["--user", "restart", "heyclaude.service"], { stdio: "ignore", detached: true }).unref(), 400),
+});
 
 rmSync(SOCKET, { force: true });
 const server = createServer((socket) => {
@@ -1942,6 +2194,7 @@ const server = createServer((socket) => {
 server.listen(SOCKET, () => console.error(`heyclaude listening on ${SOCKET}`));
 startCanceller();
 startSpotter();
+startVoices();
 // The canceller's microphone takes a moment to appear.
 if (cfg.wakeWord || interruptWord()) setTimeout(openMic, canceller ? 1500 : 0);
 connectMcpServers();

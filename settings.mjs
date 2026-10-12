@@ -1,7 +1,7 @@
 // heyclaude settings: numbered menus over config.json. Every change is saved
 // as it is made; the daemon is restarted once, on the way out.
 
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -10,6 +10,7 @@ import {
   fetchVoice, loadConfig, oracleEnv, readOnly, toolAllowed, previewVoice, readSealed, restartDaemon, saveConfig, voiceFile, writeSealed,
 } from "./lib.mjs";
 import { McpClient } from "./mcp.mjs";
+import { voiceprints } from "./speaker.mjs";
 
 const PICTURES = join(MEMORY, "pictures");
 
@@ -136,6 +137,7 @@ async function documentMenu(file) {
       file = renamed;
     }
     if (choice === "delete") {
+      if (!(await yes(`Delete "${kept.title}" from memory for good?`))) continue;
       rmSync(join(DOCUMENTS, file));
       console.log(`Deleted from memory. The original at ${kept.source} is untouched.`);
       return;
@@ -213,6 +215,7 @@ async function topicMenu(file) {
         writeTopic(to, target);
         topic.notes.splice(index, 1);
       } else if (what === "delete") {
+        if (!(await yes("Delete this note for good?"))) continue;
         topic.notes.splice(index, 1);
       } else if (what === "edit") {
         const text = await ask("Edit the note:\n", "", topic.notes[index]);
@@ -706,11 +709,91 @@ async function sightMenu() {
         await ask("Press Enter when you have seen it.");
         rmSync(shown, { force: true });
       }
-      if (answer === "delete") rmSync(join(PICTURES, file));
+      if (answer === "delete" && await yes(`Delete the picture of ${read(file).label} for good?`)) rmSync(join(PICTURES, file));
       continue;
     }
     config.sight = sight.includes(choice) ? sight.filter((source) => source !== choice) : [...sight, choice];
     save();
+  }
+}
+
+// ---------------------------------------------------------------- voices
+
+const daemon = (...args) => {
+  const result = spawnSync(process.argv[1], args, { encoding: "utf8" });
+  try { return JSON.parse(result.stdout); } catch { return { ok: false, error: result.stderr.trim() || "the assistant is not running" }; }
+};
+
+function voicesSummary() {
+  const names = voiceprints().map((print) => print.name);
+  if (!names.length) return "anyone: no voice has been taught";
+  return (config.knownVoicesOnly ?? true) ? `only ${names.join(", ")}` : `anyone (taught: ${names.join(", ")})`;
+}
+
+const PHRASES = [
+  "Hey Morgan, what's on my calendar for tomorrow afternoon?",
+  "Remind me to pick up the dry cleaning on the way home.",
+  "The quick brown fox jumps over the lazy dog by the river.",
+  "Hey Morgan, read me the first three things on my task list.",
+  "I'd like to hear the weather for the weekend, please.",
+  "Morgan, stop. Never mind, that's all for now, thanks.",
+];
+
+// Read six sentences aloud; the daemon takes each as a sample of the voice.
+async function teachVoice() {
+  const name = await ask("Whose voice is this?", config.userName ?? "");
+  if (!name) return;
+  if (changed) { restartDaemon(); changed = false; spawnSync("sleep", ["4"]); }
+  console.log(`\nRead each line aloud, at your usual distance from the laptop, pausing after each until it is ticked off.\n`);
+  const started = daemon("enroll", name);
+  if (!started.ok) return console.log(`Could not start: ${started.error}`);
+  const events = spawn(process.argv[1], ["watch"], { stdio: ["ignore", "pipe", "ignore"] });
+  let count = 0;
+  console.log(`  ${dim("1.")} ${PHRASES[0]}`);
+  const outcome = await new Promise((resolve) => {
+    createInterface({ input: events.stdout }).on("line", (line) => {
+      let event;
+      try { event = JSON.parse(line); } catch { return; }
+      if (event.type !== "enroll") return;
+      if (event.cancelled) return resolve("cancelled");
+      if (event.count === count) return console.log(dim("     too short to use; say it again"));
+      count = event.count;
+      if (count >= event.want) return resolve("done");
+      console.log(`  ${dim(`${count + 1}.`)} ${PHRASES[count]}`);
+    });
+    events.on("exit", () => resolve("cancelled"));
+  });
+  events.kill();
+  console.log(outcome === "done"
+    ? `\n${name}'s voice is taught. From now on ${config.name ?? BASICS.name} answers only to voices it has been taught.`
+    : "\nNothing was heard for a while, so it was abandoned. Nothing has changed.");
+}
+
+async function voicesMenu() {
+  if (!existsSync(join(process.env.HOME, ".local", "share", "heyclaude", "speaker"))) return console.log("The voice model is not installed.");
+  for (;;) {
+    const prints = voiceprints();
+    const only = config.knownVoicesOnly ?? true;
+    const choice = await menu("Voices it answers to", [
+      ...prints.map((print) => ({ key: `drop:${print.name}`, label: print.name, value: `taught ${new Date(print.t).toLocaleDateString()}` })),
+      { key: "teach", label: dim("Teach it a voice") },
+      { key: "only", label: "Ignore voices it has not been taught", value: prints.length ? (only ? "yes" : "no") : "nothing taught yet, so it answers anyone" },
+      { key: "bar", label: "How alike a voice must be", value: `${config.voiceThreshold ?? 0.4}  ${dim("0 to 1; lower forgives more")}` },
+      { key: "recent", label: "Recent checks" },
+    ]);
+    if (!choice) return;
+    if (choice === "teach") await teachVoice();
+    else if (choice === "only") { config.knownVoicesOnly = !only; save(); }
+    else if (choice === "bar") {
+      config.voiceThreshold = Math.min(0.9, Math.max(0.05, Number(await ask("Score needed:", String(config.voiceThreshold ?? 0.4))) || 0.4));
+      save();
+    } else if (choice === "recent") {
+      const checks = daemon("voices").checks ?? [];
+      if (!checks.length) console.log("None yet. Each time it hears speech it could act on, the score appears here.");
+      for (const check of checks) console.log(`  ${new Date(check.t).toLocaleTimeString()}  ${String(check.seconds).padStart(4)}s  ${check.score.toFixed(2)}  ${check.ok ? `accepted as ${check.name}` : "ignored"}`);
+    } else if (await yes(`Forget ${choice.slice(5)}'s voice?`)) {
+      daemon("forget-voice", choice.slice(5));
+    }
   }
 }
 
@@ -722,6 +805,7 @@ async function listeningMenu() {
     const choice = await menu("Listening", [
       { key: "wake", label: "Wake phrase", value: wake ?? "off: the microphone opens only on heyclaude toggle" },
       { key: "off", label: wake ? "Turn the wake phrase off" : "Turn the wake phrase on" },
+      { key: "voices", label: "Voices it answers to", value: voicesSummary() },
       { key: "interrupt", label: "Word that interrupts an answer", value: ("interruptWord" in config ? config.interruptWord : config.name ?? BASICS.name) ?? "off" },
       { key: "follow", label: "Seconds to wait for a reply after an answer", value: String(config.followUpSeconds ?? BASICS.followUpSeconds) },
       { key: "silence", label: "Quiet that ends your turn, in milliseconds", value: String(config.endSilenceMs ?? 900) },
@@ -730,6 +814,7 @@ async function listeningMenu() {
     if (!choice) return;
     if (choice === "wake") config.wakeWord = await ask("Wake phrase:", wake ?? `Hey ${config.name ?? BASICS.name}`);
     if (choice === "off") config.wakeWord = wake ? null : `Hey ${config.name ?? BASICS.name}`;
+    if (choice === "voices") { await voicesMenu(); continue; }
     if (choice === "interrupt") {
       console.log(`Say it while ${config.name ?? BASICS.name} is talking or thinking to cut in. On its own it stops the answer; followed by more, it asks the new thing.`);
       const word = await ask("Word (- for none):", ("interruptWord" in config ? config.interruptWord : config.name ?? BASICS.name) ?? "");
