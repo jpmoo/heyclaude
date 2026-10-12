@@ -7,7 +7,8 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { connect } from "node:net";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { homedir } from "node:os";
 import { createInterface } from "node:readline";
 import { BASICS, VOICES, fetchVoice, loadConfig, oracleEnv, restartDaemon, saveConfig } from "../lib.mjs";
 
@@ -25,12 +26,47 @@ if (!args.length || ["help", "-h", "--help"].includes(args[0])) {
     "heyclaude voice [name]          list voices | switch to one",
     "heyclaude login|logout|account  the Oracle's Claude login",
     "heyclaude status | watch        the daemon's state | its event stream",
+    "heyclaude attach <file>...      put files on your next message in the chat window",
     "heyclaude reminders             timers and reminders that are set",
     "heyclaude key export | import   write down, or put back, the key that unlocks memory",
     "heyclaude tools                 the last few tool calls and what came back",
     "heyclaude admin <json>          what the settings window uses: { op, args }",
   ].join("\n"));
   process.exit(args.length ? 0 : 2);
+}
+
+// The file choosers, run from here and not from the plugin: a plugin waits
+// only so long for a command it starts, and gave up on the chooser (closing
+// it) before a file had been picked. Started through this command, detached,
+// the chooser stays for as long as it is needed and reports back when done.
+if (args[0] === "choose" || args[0] === "choose-folder") {
+  const shell = join(homedir(), ".local", "bin", "noctalia");
+  const folder = args[0] === "choose-folder";
+  const picked = spawnSync("zenity", folder
+    ? ["--file-selection", "--directory", "--title=A folder the assistant may read"]
+    : ["--file-selection", "--multiple", "--separator=\n", "--title=Attach to your message"], { encoding: "utf8" });
+  const paths = (picked.stdout ?? "").split("\n").filter(Boolean);
+  if (folder) {
+    if (paths[0]) {
+      const ask = (request) => JSON.parse(spawnSync(process.argv[1], ["admin", JSON.stringify(request)], { encoding: "utf8" }).stdout || "{}");
+      const folders = ask({ op: "config.get" }).folders ?? [];
+      ask({ op: "config.set", args: { values: { folders: [...folders.filter((entry) => entry !== paths[0]), paths[0]] } } });
+    }
+    spawnSync(shell, ["msg", "panel-open", "jpmoo/morgan:settings"], { stdio: "ignore" });
+  } else {
+    for (const file of paths) spawnSync(shell, ["msg", "plugin", "jpmoo/morgan:link", "all", "attach", file], { stdio: "ignore" });
+    spawnSync(shell, ["msg", "panel-open", "jpmoo/morgan:chat"], { stdio: "ignore" });
+  }
+  process.exit(0);
+}
+
+if (args[0] === "attach") {
+  // Put files on the next message in the chat window, and bring the window up.
+  const shell = join(homedir(), ".local", "bin", "noctalia");
+  const files = args.slice(1).map((file) => resolve(file)).filter((file) => existsSync(file) || console.error(`heyclaude: no such file: ${file}`));
+  for (const file of files) spawnSync(shell, ["msg", "plugin", "jpmoo/morgan:link", "all", "attach", file], { stdio: "ignore" });
+  if (files.length) spawnSync(shell, ["msg", "panel-open", "jpmoo/morgan:chat"], { stdio: "ignore" });
+  process.exit(files.length ? 0 : 1);
 }
 
 if (args[0] === "key") {

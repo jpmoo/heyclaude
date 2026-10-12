@@ -68,3 +68,49 @@ export function when(at, now = Date.now()) {
   if (days === 1) return `tomorrow at ${time}${away ? ` (${away})` : ""}`;
   return `on ${then.toLocaleDateString("en-US", { weekday: "long", day: "numeric", month: "long" })} at ${time}`;
 }
+
+// ---------------------------------------------------------------- days as dates
+//
+// A day named in words, as the date it is. The model is not left to work
+// this out: asked what is due on Tuesday, it passed "Tuesday" to a tool that
+// wanted a date, and on a Monday did not see that Tuesday was tomorrow.
+
+const pad = (n) => String(n).padStart(2, "0");
+export const isoDate = (day) => `${day.getFullYear()}-${pad(day.getMonth() + 1)}-${pad(day.getDate())}`;
+
+// "tuesday" (the next one, counting today), "today", "tomorrow", "yesterday".
+// Null for anything else.
+export function dateOf(word, now = Date.now()) {
+  const said = String(word).trim().toLowerCase().replace(/^(on|this|next|by|for)\s+/, "");
+  const day = new Date(now);
+  day.setHours(12, 0, 0, 0);
+  const weekday = DAYS.indexOf(said);
+  if (weekday >= 0) day.setDate(day.getDate() + ((weekday - day.getDay() + 7) % 7));
+  else if (said === "tomorrow") day.setDate(day.getDate() + 1);
+  else if (said === "yesterday") day.setDate(day.getDate() - 1);
+  else if (said !== "today") return null;
+  return isoDate(day);
+}
+
+// The fortnight ahead, and yesterday, as a table for the model to read from.
+export function calendar(now = Date.now()) {
+  const lines = [];
+  for (let offset = -1; offset <= 13; offset++) {
+    const day = new Date(now);
+    day.setHours(12, 0, 0, 0);
+    day.setDate(day.getDate() + offset);
+    const name = day.toLocaleDateString("en-US", { weekday: "long" });
+    const label = offset === -1 ? "yesterday" : offset === 0 ? "today" : offset === 1 ? "tomorrow" : offset < 7 ? `this coming ${name}` : `${name} of next week`;
+    lines.push(`${isoDate(day)} is ${name} (${label})`);
+  }
+  return lines.join("; ");
+}
+
+// The weekdays named in what the user said, each with its date.
+export function daysNamed(text, now = Date.now()) {
+  const found = [];
+  for (const name of DAYS) {
+    if (new RegExp(`\\b${name}\\b`, "i").test(text)) found.push(`${name[0].toUpperCase()}${name.slice(1)} is ${dateOf(name, now)}`);
+  }
+  return found;
+}

@@ -11,6 +11,14 @@ local shell = noctalia.expandPath("~/.local/bin/noctalia")
 local custom = noctalia.getConfig("accent_source") ~= "theme"
 local accent = if custom then (noctalia.getConfig("accent") or "#6f9bb3") else nil
 
+-- The window's frame: see-through, but dimmed enough that what is behind it
+-- does not compete with what is in it. The areas holding text are solid.
+local FRAME = "surface/0.6"
+-- The shell keeps a 16 px margin inside a panel, so what is drawn has that
+-- much less height than the panel was declared with. Drawn taller, the
+-- backing hangs out below the window.
+local INSIDE = 720 - 2 * 16
+
 local function tint(color: string, alpha: number): string
   if color:sub(1, 1) == "#" then
     return color:sub(1, 7) .. string.format("%02x", math.floor(alpha * 255 + 0.5))
@@ -37,8 +45,23 @@ local LOOK = {
   idle = { glyph = "message-circle", title = "", color = accent or "on_surface_variant" },
 }
 
-local WIDTH = 640 - 2 * 16 -- the panel's width, less its padding
+local WIDTH = 640 - 2 * 16 - 2 * 10 -- the panel's width, less the shell's margin and our own
 local draft = 0 -- bumped to hand the input a new key, which empties it
+
+-- While Morgan is working something out there is no voice to draw, so the
+-- bars run as a slow wave instead and the title counts its dots.
+local WORKING = { thinking = true, consulting = true, transcribing = true }
+local phase = 0
+local sinceDraw = 0
+
+local function wave(i: number): number
+  return 0.10 + 0.22 * (1 + math.sin(phase * 2.4 - i * 0.42)) * (0.6 + 0.4 * math.sin(phase * 0.9 + i * 0.13))
+end
+
+local function dots(title: string): string
+  return title .. string.rep(".", 1 + math.floor(phase * 1.6) % 3)
+end
+
 local opened = 0 -- bumped on each open, to start at the newest message
 local render -- defined below; the buttons need to call it
 
@@ -74,17 +97,18 @@ local function tools(index: number, text: string)
   }
 end
 
--- Choosing a file opens a window of its own, which takes the chat window's
--- place on screen; the chat window is brought back once a choice is made.
+-- Attaching is done by the service, which is always running. The file
+-- chooser is a window of its own: opened from here it came up behind this
+-- one, and this one was then dismissed with whatever had been typed. So the
+-- service closes this window first, shows the chooser, and reopens it; and
+-- what has been typed is kept (see "draft" below) and put back.
 local function attach()
-  noctalia.runAsync({ "zenity", "--file-selection", "--multiple", "--separator=\n", "--title=Attach to your message" }, function(result)
-    local files = noctalia.state.get("attachments") or {}
-    for path in (result.stdout or ""):gmatch("[^\n]+") do
-      table.insert(files, path)
-    end
-    noctalia.state.set("attachments", files)
-    noctalia.runAsync({ shell, "msg", "panel-open", "jpmoo/morgan:chat" })
-  end)
+  noctalia.state.set("attach_request", { from = "chooser", at = noctalia.nowMs() })
+end
+
+-- A file copied in the file manager (Ctrl+C on it) can be attached without the chooser.
+local function attachCopied()
+  noctalia.state.set("attach_request", { from = "clipboard", at = noctalia.nowMs() })
 end
 
 -- Tall enough for the text at about seventy characters to the line.
@@ -110,6 +134,7 @@ local function send(text: string)
   else
     noctalia.runAsync({ heyclaude, "type", text })
   end
+  noctalia.state.set("draft", "")
   draft += 1
 end
 
@@ -124,7 +149,7 @@ render = function()
       table.insert(bars, ui.box({
         key = tostring(i),
         width = 3,
-        height = 3 + math.floor(math.sqrt(levels[i]) * 21),
+        height = 3 + math.floor(math.sqrt(if WORKING[state] then wave(i) else levels[i]) * 21),
         radius = 1,
         fill = look.color,
       }))
@@ -155,7 +180,7 @@ render = function()
         gap = 2,
         padding = 10,
         radius = 10,
-        fill = if mine then tint(role("primary"), 0.22) elseif oracle then "tertiary/0.18" else "surface_variant/0.75",
+        fill = if mine then tint(role("primary"), 0.22) elseif oracle then "tertiary/0.18" else "surface",
         border = if mine then tint(role("primary"), 0.5) elseif oracle then "tertiary/0.4" else "outline/0.25",
         borderWidth = 1,
       }, {
@@ -196,7 +221,7 @@ render = function()
   -- The answer being written, shown as it comes.
   local partial = noctalia.state.get("partial") or ""
   if partial ~= "" then
-    table.insert(lines, ui.column({ key = "partial", gap = 2, padding = 10, radius = 10, fill = "surface_variant/0.75", border = tint(role("primary"), 0.5), borderWidth = 1 }, {
+    table.insert(lines, ui.column({ key = "partial", gap = 2, padding = 10, radius = 10, fill = "surface", border = tint(role("primary"), 0.5), borderWidth = 1 }, {
       ui.label({ text = `{who()}`, color = role("secondary"), fontSize = 10, fontWeight = "bold" }),
       ui.markdown({ text = partial, width = WIDTH - 66 }),
     }))
@@ -204,7 +229,7 @@ render = function()
 
   local header = ui.row({ gap = 10, align = "center", fill = tint(look.color, 0.14), radius = 12, paddingH = 12, paddingV = 6 }, {
     ui.glyph({ name = look.glyph, size = 20, color = look.color }),
-    ui.label({ text = if look.title == "" then who() else look.title, color = "on_surface", fontSize = 13, fontWeight = "bold" }),
+    ui.label({ text = if look.title == "" then who() elseif WORKING[state] then dots(look.title) else look.title, color = "on_surface", fontSize = 13, fontWeight = "bold" }),
     ui.row({ gap = 2, align = "center", minHeight = 24 }, bars),
     ui.spacer({ flexGrow = 1 }),
     ui.button({
@@ -227,14 +252,22 @@ render = function()
     }),
   })
 
-  local composer = ui.row({ gap = 8, align = "center", fill = "surface_variant/0.55", radius = 14, padding = 6 }, {
-    ui.button({ glyph = "paperclip", variant = "ghost", tooltip = "Attach files", onClick = attach }),
+  local composer = ui.row({ gap = 8, align = "center", fill = "surface_variant", radius = 14, padding = 6 }, {
+    ui.button({
+      glyph = "paperclip", variant = "ghost", onClick = attach, onRightClick = attachCopied,
+      tooltip = "Attach files. Right-click to attach a file you have copied in the file manager.",
+    }),
     ui.input({
       key = `draft{draft}`,
+      -- What was typed before the window last closed: it is kept until it is sent.
+      value = noctalia.state.get("draft") or "",
       placeholder = `Type to {who()}, or press the microphone and speak`,
       focus = true,
       flexGrow = 1,
       frameVisible = false,
+      onChange = function(text)
+        noctalia.state.set("draft", text)
+      end,
       onSubmit = function(text)
         send(text)
         render()
@@ -254,9 +287,10 @@ render = function()
   -- The list is the only thing here that stretches: anything else that could
   -- (a placeholder spacer, once) takes half the spare height from it.
   local body = {
-    header,
+    -- A solid backing under the tinted header, so its text is not read against whatever is behind the window.
+    ui.column({ fill = "surface", radius = 12 }, { header }),
     ui.scroll({
-      gap = 8, padding = 10, flexGrow = 1, radius = 12, fill = "surface_variant/0.22",
+      gap = 8, padding = 10, flexGrow = 1, radius = 12, fill = "surface_variant",
       stickToBottom = true, scrollToBottomRev = opened,
     }, lines),
   }
@@ -264,10 +298,30 @@ render = function()
     table.insert(body, ui.row({ gap = 6, align = "center" }, chips))
   end
   table.insert(body, composer)
-  panel.render(ui.column({ padding = 16, gap = 10, height = 720 }, body))
+  panel.render(ui.column({ padding = 10, gap = 10, height = INSIDE, fill = FRAME, radius = 14 }, body))
 end
 
 noctalia.state.watch("state", render)
+
+-- Frames are asked for only while there is something to animate.
+local function animate()
+  panel.setNeedsFrameTick(WORKING[noctalia.state.get("state") or "idle"] == true)
+end
+
+function onFrameTick(deltaMs)
+  if not WORKING[noctalia.state.get("state") or "idle"] then
+    return
+  end
+  phase += deltaMs / 1000
+  sinceDraw += deltaMs
+  if sinceDraw >= 110 then
+    sinceDraw = 0
+    render()
+  end
+end
+
+noctalia.state.watch("state", animate)
+
 noctalia.state.watch("name", render)
 noctalia.state.watch("levels", function()
   if (noctalia.state.get("state") or "idle") ~= "idle" then
@@ -280,6 +334,7 @@ noctalia.state.watch("partial", render)
 
 function onOpen()
   noctalia.state.set("chat_open", true)
+  animate()
   draft += 1
   opened += 1
   selecting = nil

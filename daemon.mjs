@@ -197,6 +197,8 @@ const morganPrompt = () => [
     ? "This turn was typed, and your answer will be read on screen, not heard: use markdown where it helps (lists, bold, code blocks, links), and be as long as the question deserves, no longer."
     : "Answer in plain spoken sentences: no markdown, lists, headings, code, emoji or URLs. Be brief, usually one to three sentences, and say more only when asked.",
   cfg.style,
+  "About the user's own life, say only what is in your memory, in this conversation, or in what a tool returned: never",
+  "fill in a person, a hobby, a place or any other detail of their life that you have not been given.",
   "Answer from your own knowledge whenever you are confident. You can also consult the Oracle, a far more capable",
   "intelligence that can search the web. Consult it for anything current or recent, anything you are not sure of,",
   "and anything that needs deep expertise or careful reasoning. Do not guess where the Oracle would know.",
@@ -240,6 +242,8 @@ const morganPrompt = () => [
   "Use search_conversations to look further,",
   "by subject, by date or both, whenever the user refers to something said before that you cannot see.",
   `It is ${new Date().toLocaleString("en-US", { dateStyle: "full", timeStyle: "short" })}.`,
+  "Never work a date out yourself. These are the dates, already worked out; whenever the user names a day and a tool",
+  `takes one, give the tool the date from this list, as YYYY-MM-DD: ${reminders.calendar()}.`,
   interviewing ? INTERVIEW_PROMPT : "",
   seen ? `\n\n${seen}` : "",
   recalled.length ? `\n\nFrom earlier conversations, possibly relevant:\n${recalled.map((hit) => describe(hit)).join("\n")}` : "",
@@ -257,6 +261,7 @@ const INTERVIEW_PROMPT = [
 
 const oraclePrompt = () => [
   `You are the Oracle. ${cfg.name}, a small local voice assistant, consults you on its user's behalf when a question is`,
+  cfg.userName ? `(The user is ${cfg.userName}.)` : "",
   `beyond it. Each message gives the recent conversation and ${cfg.name}'s question. Answer accurately and compactly in`,
   `plain prose with no markdown, lists or URLs: ${cfg.name} will relay your answer aloud in a sentence or three, so lead`,
   "with the answer and include only what matters. Say plainly when you are unsure or could not find something.",
@@ -294,7 +299,7 @@ const MORGAN_TOOLS = [{
       type: "object",
       properties: {
         topic: { type: "string", description: "An existing topic name, or a short name for a new one" },
-        note: { type: "string", description: "One self-contained fact, in a full sentence in the third person that names the user, as in Sam has a beagle called Pickle. Never I, me or my, and never the words the user" },
+        note: { type: "string", description: "One self-contained fact, in a full sentence in the third person that names the user. Never I, me or my, and never the words the user" },
         description: { type: "string", description: "For a new topic: one line saying what belongs in it" },
       },
       required: ["topic", "note"],
@@ -372,7 +377,7 @@ const sightTools = () => cfg.sight.map((source) => ({
     parameters: {
       type: "object",
       properties: {
-        label: { type: "string", description: "Who or what it is, for example the user, Ana, or the kitchen whiteboard" },
+        label: { type: "string", description: "Who or what it is: the user, a named person, or a named thing" },
         source: { type: "string", enum: cfg.sight, description: "Where the picture comes from" },
         note: { type: "string", description: "Anything worth knowing about it, such as who the person is to the user" },
       },
@@ -652,7 +657,7 @@ const reminderList = () => (due.length
   ? [...due].sort((a, b) => a.at - b.at).map((entry) => `- ${entry.text || "a timer"}: ${reminders.when(entry.at)}`).join("\n")
   : "There are none.");
 
-let reminderTalk = 0; // when reminders were last the subject, so "cancel the one about Ana" is understood
+let reminderTalk = 0; // when reminders were last the subject, so "cancel the one about the dentist" is understood
 
 async function reminderIntent(text) {
   // The word need not be said again while they are the subject, or when
@@ -690,7 +695,7 @@ async function reminderIntent(text) {
             + "they give a length of time from now (in ten minutes, in two hours), with amount and unit; kind is absolute when they "
             + "give a clock time or a day, with time as 24-hour HH:MM (empty if none was said) and day as today, tomorrow, a weekday "
             + "name, a date as YYYY-MM-DD, or empty if no day was said. text: what to remind them of, as a short phrase addressed "
-            + "to them (call Ana back, take the bread out); empty for a plain timer. For cancel and change: text is which one, in their words, "
+            + "to them (take the bread out, ring the dentist); empty for a plain timer. For cancel and change: text is which one, in their words, "
             + `and all is true if they mean every one. It is ${new Date().toLocaleString("en-US", { dateStyle: "full", timeStyle: "short" })}.`
             + `${lastFired ? ` The reminder that last went off was: ${lastFired.text || "a timer"}.` : ""}`
             + `${due.length ? ` Set at present:\n${reminderList()}` : ""}`,
@@ -1246,6 +1251,11 @@ async function mcpTool(name, args) {
     return "This changes something, so it has NOT been done yet. Tell the user exactly what you are about to do, with the details that matter, "
       + "and ask them to say yes. It will be carried out for you when they do. Do not say it is done.";
   }
+  // A weekday name that reaches a tool all the same is made a date on the way.
+  args = Object.fromEntries(Object.entries(args ?? {}).map(([key, value]) => {
+    const date = typeof value === "string" && /day$/i.test(value.trim()) && !/^(to|yester)day$/i.test(value.trim()) ? reminders.dateOf(value) : null;
+    return [key, date ?? value];
+  }));
   emit({ type: "tool", name, args });
   fresh = true;
   let result;
@@ -1413,6 +1423,9 @@ async function ask(text, { typed = false, files = [] } = {}) {
     const lookup = mcpTools.length > 0 && LOOKUP_ASKED.test(text);
     let corrected = false;
     let called = false;
+    // A day the user named is turned into its date here, where it is certain.
+    const named = reminders.daysNamed(text);
+    if (named.length) seen += ` The user named ${named.length > 1 ? "days" : "a day"}. As dates: ${named.join("; ")}. Use those dates.`;
     await reminderIntent(text);
     if (mine !== turn) return;
     seen += await keepIntent(text, files);
@@ -1731,9 +1744,12 @@ function consultOracle(question) {
   const recent = history
     .filter((message) => message.role !== "tool" && message.content)
     .slice(-8)
-    .map((message) => `${message.role === "user" ? "User" : cfg.name}: ${message.content}`)
+    .map((message) => `${message.role === "user" ? cfg.userName ?? "User" : cfg.name}: ${message.content}`)
     .join("\n");
-  const content = `Recent conversation:\n${recent}\n\n${cfg.name}'s question for you:\n${question}`;
+  // The name goes with each question too: the Oracle is started once and kept,
+  // and the name may have been set since.
+  const whose = cfg.userName ? ` (asked on behalf of ${cfg.userName})` : "";
+  const content = `Recent conversation:\n${recent}\n\n${cfg.name}'s question for you${whose}:\n${question}`;
   return new Promise((resolve) => {
     consulting = { resolve };
     oracle.stdin.write(JSON.stringify({ type: "user", message: { role: "user", content } }) + "\n");
@@ -1743,8 +1759,6 @@ function consultOracle(question) {
 // ---------------------------------------------------------------- speech out
 
 let pending = ""; // text received but not yet a whole sentence
-const sentences = [];
-let speaker = null;
 let turnDone = false;
 let quiet = false; // the current turn was typed, so nothing is spoken
 
@@ -1768,82 +1782,124 @@ function enqueue(sentence) {
   if (!clean) return;
   emit({ type: "sentence", text: clean });
   if (!cfg.tts || quiet) return;
-  sentences.push(clean);
-  speakNext();
+  speakText(clean);
 }
 
-// Speak one piece of text. The audio passes through here on its way to the
-// player so that its loudness can be reported, in step with playback, to
-// whatever is drawing a waveform.
-function utter(text, done) {
+// Speaking. Sentences are turned into sound one after another as soon as
+// they are written, ahead of being played, and all go to one player kept
+// open for the run of speech. Made and played one at a time, each sentence
+// waited for the last to finish before it was even started, and there was a
+// pause between every two.
+let voiceEpoch = 0; // bumped to abandon whatever is in hand
+let making = Promise.resolve(); // the queue of sentences being turned into sound
+const ready = []; // in order: { pcm } once made, { pcm: null } while being made
+let player = null;
+let playRate = 22050;
+let playEnd = 0; // when what has been handed to the player will have been heard
+let drainTimer = null;
+let levelTimers = [];
+let afterSpeech = null; // run once, when a run of speech has played out
+
+const speaking = () => ready.length > 0 || Date.now() < playEnd;
+
+// One sentence as raw 16-bit mono audio.
+function synthesize(text) {
+  return new Promise((resolve) => {
+    const chunks = [];
+    const done = () => resolve(Buffer.concat(chunks));
+    if (kokoroReady) {
+      const source = connect(KOKORO_SOCKET);
+      source.on("data", (chunk) => chunks.push(chunk));
+      source.on("end", done);
+      source.on("error", done);
+      source.end(text + "\n");
+    } else {
+      const synth = spawn("sh", ["-c", "exec " + cfg.tts.replace("{voice}", `'${voiceFile}'`)], { stdio: ["pipe", "pipe", "ignore"] });
+      synth.stdin.on("error", () => {});
+      synth.stdout.on("data", (chunk) => chunks.push(chunk));
+      synth.on("close", done);
+      synth.on("error", done);
+      synth.stdin.end(text + "\n");
+    }
+  });
+}
+
+function speakText(text) {
   for (const [word, said] of Object.entries(cfg.pronunciations)) {
     text = text.replace(new RegExp(`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "gi"), said);
   }
-  // Kokoro answers on its socket with the whole sentence; Piper is run afresh
-  // for each one. Either way the audio arrives here as a stream.
-  const kokoro = kokoroReady;
-  const rate = kokoro ? 24000 : voiceRate;
-  let source;
-  let synth = null;
-  if (kokoro) {
-    source = connect(KOKORO_SOCKET);
-    source.end(text + "\n");
-  } else {
-    synth = spawn("sh", ["-c", "exec " + cfg.tts.replace("{voice}", `'${voiceFile}'`)], { stdio: ["pipe", "pipe", "ignore"] });
-    synth.stdin.on("error", () => {});
-    synth.stdin.end(text + "\n");
-    source = synth.stdout;
-  }
-  const player = spawn("sh", ["-c", "exec " + cfg.play.replace("{rate}", rate)], { stdio: ["pipe", "ignore", "ignore"] });
-  const WINDOW = Math.round(rate * 0.05) * 2; // 50 ms
-  const levels = [];
-  let rest = Buffer.alloc(0);
-  let shown = 0;
-  let timer = null;
-  let finished = false;
-  const finish = () => {
-    if (finished) return;
-    finished = true;
-    clearInterval(timer);
-    emit({ type: "level", who: "morgan", value: 0 });
-    done();
-  };
-  player.stdin.on("error", () => {});
-  source.on("data", (chunk) => {
-    player.stdin.write(chunk);
-    rest = Buffer.concat([rest, chunk]);
-    for (; rest.length >= WINDOW; rest = rest.subarray(WINDOW)) {
-      let sum = 0;
-      for (let i = 0; i < WINDOW; i += 2) sum += rest.readInt16LE(i) ** 2;
-      levels.push(Math.min(1, Math.sqrt(sum / (WINDOW / 2)) / 10000));
-    }
-    timer ??= setInterval(() => {
-      if (shown < levels.length) emit({ type: "level", who: "morgan", value: Number(levels[shown++].toFixed(2)) });
-    }, 50);
+  const job = { pcm: null };
+  const epoch = voiceEpoch;
+  ready.push(job);
+  making = making.then(() => (epoch === voiceEpoch ? synthesize(text) : Buffer.alloc(0))).then((pcm) => {
+    job.pcm = pcm;
+    if (epoch === voiceEpoch) pump();
   });
-  source.on("end", () => player.stdin.end());
-  source.on("error", () => player.stdin.end());
-  synth?.on("error", finish);
-  player.on("error", finish);
-  player.on("exit", finish);
-  return { stop() { finished = true; clearInterval(timer); synth?.kill("SIGTERM"); if (kokoro) source.destroy(); player.kill("SIGTERM"); } };
 }
 
-function speakNext() {
-  if (speaker || !sentences.length) return;
-  if (state === "thinking") setState("speaking");
-  const mine = utter(sentences.shift(), () => {
-    if (speaker === mine) speaker = null;
-    speakNext();
-    if (turnDone) finishSpeaking();
+// Hand the player whatever is made and next in line.
+function pump() {
+  while (ready.length && ready[0].pcm) {
+    const { pcm } = ready.shift();
+    if (!pcm.length) continue;
+    if (!player) {
+      playRate = kokoroReady ? 24000 : voiceRate;
+      player = spawn("sh", ["-c", "exec " + cfg.play.replace("{rate}", playRate)], { stdio: ["pipe", "ignore", "ignore"] });
+      player.stdin.on("error", () => {});
+      player.on("error", () => {});
+      playEnd = 0;
+    }
+    if (state === "thinking") setState("speaking");
+    const begins = Math.max(Date.now(), playEnd);
+    showLevels(pcm, begins - Date.now());
+    player.stdin.write(pcm);
+    playEnd = begins + (pcm.length / 2 / playRate) * 1000;
+  }
+  clearTimeout(drainTimer);
+  // A little over, for what the player still holds when the last of it is written.
+  drainTimer = setTimeout(drained, Math.max(0, playEnd - Date.now()) + 250);
+}
+
+// The loudness of a stretch of sound, reported in step with its being heard,
+// for whatever is drawing a waveform.
+function showLevels(pcm, delay) {
+  const WINDOW = Math.round(playRate * 0.05) * 2; // 50 ms
+  const levels = [];
+  for (let at = 0; at + WINDOW <= pcm.length; at += WINDOW) {
+    let sum = 0;
+    for (let i = 0; i < WINDOW; i += 2) sum += pcm.readInt16LE(at + i) ** 2;
+    levels.push(Math.min(1, Math.sqrt(sum / (WINDOW / 2)) / 10000));
+  }
+  const epoch = voiceEpoch;
+  levels.forEach((level, index) => {
+    levelTimers.push(setTimeout(() => {
+      if (epoch === voiceEpoch) emit({ type: "level", who: "morgan", value: Number(level.toFixed(2)) });
+    }, delay + index * 50));
   });
-  speaker = mine;
+}
+
+// Everything handed over has been heard, and nothing more is being made.
+function drained() {
+  if (speaking()) return;
+  levelTimers = [];
+  emit({ type: "level", who: "morgan", value: 0 });
+  const then = afterSpeech;
+  afterSpeech = null;
+  if (then) { closePlayer(); return then(); }
+  if (turnDone) finishSpeaking();
+}
+
+function closePlayer() {
+  player?.stdin.end();
+  player = null;
+  playEnd = 0;
 }
 
 function finishSpeaking() {
   turnDone = true;
-  if (speaker || sentences.length) return;
+  if (speaking()) return;
   turnDone = false;
+  closePlayer();
   if (state !== "thinking" && state !== "speaking") return;
   setState("idle");
   const invite = spokenTurn && cfg.tts && cfg.followUpSeconds > 0;
@@ -1852,11 +1908,17 @@ function finishSpeaking() {
 }
 
 function stopSpeech() {
+  voiceEpoch++;
   pending = "";
-  sentences.length = 0;
+  ready.length = 0;
   turnDone = false;
-  speaker?.stop();
-  speaker = null;
+  afterSpeech = null;
+  clearTimeout(drainTimer);
+  for (const timer of levelTimers) clearTimeout(timer);
+  levelTimers = [];
+  player?.kill("SIGTERM");
+  player = null;
+  playEnd = 0;
   emit({ type: "level", who: "morgan", value: 0 });
 }
 
@@ -2134,10 +2196,8 @@ function acknowledge() {
   if (!cfg.tts || !cfg.wakeReply) return startActive(cfg.noSpeechSeconds);
   interrupt();
   setState("speaking"); // so the reply is not taken for the user
-  speaker = utter(cfg.wakeReply, () => {
-    speaker = null;
-    if (state === "speaking") startActive(cfg.noSpeechSeconds);
-  });
+  afterSpeech = () => { if (state === "speaking") startActive(cfg.noSpeechSeconds); };
+  speakText(cfg.wakeReply);
 }
 
 const words = (text) => text.toLowerCase().replace(/[^a-z0-9\s]/g, "").split(/\s+/).filter(Boolean);
@@ -2230,7 +2290,7 @@ function handle(line, socket) {
       ask(rest.join(" "));
       return reply({ ok: true, state });
     case "speak":
-      if (cfg.tts) { sentences.push(rest.join(" ")); speakNext(); }
+      if (cfg.tts) speakText(rest.join(" "));
       return reply({ ok: true, state });
     case "type":
       stopActive();

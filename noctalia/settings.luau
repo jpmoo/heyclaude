@@ -9,6 +9,14 @@ local heyclaude = noctalia.expandPath("~/.local/bin/heyclaude")
 local custom = noctalia.getConfig("accent_source") ~= "theme"
 local accent = if custom then (noctalia.getConfig("accent") or "#6f9bb3") else "primary"
 
+-- The window's frame: see-through, but dimmed enough that what is behind it
+-- does not compete with what is in it. The areas holding text are solid.
+local FRAME = "surface/0.6"
+-- The shell keeps a 16 px margin inside a panel, so what is drawn has that
+-- much less height than the panel was declared with. Drawn taller, the
+-- backing hangs out below the window.
+local INSIDE = 740 - 2 * 16
+
 local function tint(color: string, alpha: number): string
   if color:sub(1, 1) == "#" then
     return color:sub(1, 7) .. string.format("%02x", math.floor(alpha * 255 + 0.5))
@@ -110,7 +118,7 @@ local function card(heading: string?, children)
   for _, child in ipairs(children) do
     table.insert(inside, child)
   end
-  return ui.column({ gap = 8, padding = 12, radius = 12, fill = "surface_variant/0.35", border = "outline/0.2", borderWidth = 1 }, inside)
+  return ui.column({ gap = 8, padding = 12, radius = 12, fill = "surface", border = "outline/0.3", borderWidth = 1 }, inside)
 end
 
 local function hint(text: string)
@@ -690,13 +698,10 @@ local function filesTab()
           end,
         }),
         ui.button({ text = "Browse…", variant = "secondary", controlSize = "sm", onClick = function()
-          noctalia.runAsync({ "zenity", "--file-selection", "--directory", `--title=A folder {who()} may read` }, function(result)
-            local picked = (result.stdout or ""):gsub("%s+$", "")
-            if picked ~= "" then
-              set({ folders = with(picked) }, "Folder added.")
-            end
-            noctalia.runAsync({ noctalia.expandPath("~/.local/bin/noctalia"), "msg", "panel-open", "jpmoo/morgan:settings" })
-          end)
+          -- Closed first so the chooser is not behind this window; `heyclaude
+          -- choose-folder` adds what is picked and reopens it.
+          panel.close()
+          noctalia.runAsync({ heyclaude, "choose-folder" })
         end }),
       }),
       hint("Markdown, text, code, PDFs and pictures inside these folders can be listed, searched and read. Nothing is ever written."),
@@ -871,8 +876,8 @@ render = function()
     body = connectionsTab()
   end
 
-  panel.render(ui.column({ padding = 16, gap = 10, height = 740 }, {
-    ui.row({ gap = 10, align = "center", fill = tint(accent, 0.14), radius = 12, paddingH = 12, paddingV = 6 }, {
+  panel.render(ui.column({ padding = 10, gap = 10, height = INSIDE, fill = FRAME, radius = 14 }, {
+    ui.column({ fill = "surface", radius = 12 }, { ui.row({ gap = 10, align = "center", fill = tint(accent, 0.14), radius = 12, paddingH = 12, paddingV = 6 }, {
       ui.glyph({ name = "settings", size = 20, color = accent }),
       ui.label({ text = `{who()} settings`, color = "on_surface", fontSize = 13, fontWeight = "bold" }),
       ui.label({ text = status, color = accent, fontSize = 12, maxLines = 1, maxWidth = 460 }),
@@ -883,8 +888,8 @@ render = function()
       ui.button({ glyph = "x", variant = "ghost", controlSize = "sm", tooltip = "Close", onClick = function()
         panel.close()
       end }),
-    }),
-    ui.row({ gap = 6, align = "center" }, tabs),
+    }) }),
+    ui.row({ gap = 6, align = "center", fill = "surface", radius = 12, padding = 4 }, tabs),
     ui.scroll({ gap = 10, padding = 4, flexGrow = 1 }, body),
   }))
 end
@@ -928,7 +933,12 @@ function onIpc(event, payload)
   end
 end
 
+function onClose()
+  noctalia.state.set("settings_open", false)
+end
+
 function onOpen()
+  noctalia.state.set("settings_open", true)
   status = ""
   confirming = nil
   render()

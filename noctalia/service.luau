@@ -77,7 +77,7 @@ end
 
 local function show(want: boolean)
   -- The chat window has its own waveform; two of them at once is one too many.
-  if want and noctalia.state.get("chat_open") then
+  if want and (noctalia.state.get("chat_open") or noctalia.state.get("settings_open")) then
     want = false
   end
   if want == open then
@@ -145,7 +145,10 @@ local function onLine(line: string)
     show(false)
     clearLevels()
   elseif event.type == "user" then
-    noctalia.state.set("caption", event.text)
+    -- The popup shows the whole of the turn: what was asked, then the answer as it is spoken.
+    noctalia.state.set("caption", "")
+    noctalia.state.set("asked", event.text)
+    noctalia.state.set("answer", "")
     say("you", event.text)
   elseif event.type == "partial" then
     noctalia.state.set("partial", event.text)
@@ -153,7 +156,8 @@ local function onLine(line: string)
     noctalia.state.set("partial", "")
     say("morgan", event.text)
   elseif event.type == "sentence" then
-    noctalia.state.set("caption", event.text)
+    local sofar = noctalia.state.get("answer") or ""
+    noctalia.state.set("answer", if sofar == "" then event.text else `{sofar} {event.text}`)
   elseif event.type == "look" then
     noctalia.state.set("caption", `Looking at the {event.source}`)
     local glyph = if event.source == "camera" then "camera" elseif event.source == "clipboard" then "clipboard" else "device-desktop"
@@ -191,6 +195,8 @@ end
 
 noctalia.state.set("state", "idle")
 noctalia.state.set("caption", "")
+noctalia.state.set("asked", "")
+noctalia.state.set("answer", "")
 noctalia.state.set("levels", levels)
 noctalia.state.set("log", log)
 noctalia.state.set("partial", "")
@@ -212,6 +218,57 @@ noctalia.runAsync({ heyclaude, "recent", "40" }, function(result)
   log = earlier
   noctalia.state.set("log", log)
 end)
+
+-- A request from the chat window to attach files (see chat.luau).
+local function addFiles(paths)
+  local files = noctalia.state.get("attachments") or {}
+  for _, path in ipairs(paths) do
+    table.insert(files, path)
+  end
+  noctalia.state.set("attachments", files)
+end
+
+noctalia.state.watch("attach_request", function(request)
+  if type(request) ~= "table" then
+    return
+  end
+  if request.from == "clipboard" then
+    -- A copied file arrives as a file:// address; a copied path as plain text.
+    noctalia.runAsync("wl-paste --type text/uri-list 2>/dev/null || wl-paste --no-newline 2>/dev/null", function(result)
+      local found = {}
+      for line in (result.stdout or ""):gmatch("[^\r\n]+") do
+        local path = line:match("^file://(.+)$")
+        if path then
+          table.insert(found, noctalia.string.urlDecode(path))
+        elseif line:sub(1, 1) == "/" then
+          table.insert(found, line)
+        elseif line:sub(1, 2) == "~/" then
+          table.insert(found, noctalia.expandPath(line))
+        end
+      end
+      if #found == 0 then
+        noctalia.notify(who(), "Nothing copied looks like a file. Copy one in the file manager first.")
+      else
+        addFiles(found)
+      end
+    end)
+    return
+  end
+  -- The chooser: this window out of the way first; `heyclaude choose` shows
+  -- the chooser, adds what is picked and brings the window back. It is
+  -- started without waiting on it, because a command that is waited on is
+  -- given up on after a while, and that closed the chooser mid-choice.
+  noctalia.runAsync({ shell, "msg", "panel-close", "jpmoo/morgan:chat" }, function()
+    noctalia.runAsync({ heyclaude, "choose" })
+  end)
+end)
+
+-- From outside: `heyclaude attach <file>` puts a file on the next message.
+function onIpc(event, payload)
+  if event == "attach" and type(payload) == "string" and payload ~= "" then
+    addFiles({ payload })
+  end
+end
 
 noctalia.state.watch("chat_open", function(value)
   if value then

@@ -40,10 +40,13 @@ entry = "widget.luau"
 id = "voice"
 entry = "voice.luau"
 width = 420
-height = 176
+height = 236
+# Not persistent: a persistent panel is always floating, whatever placement
+# is chosen for it. The price is that it shares the one slot ordinary panels
+# have, so the service does not raise it over Morgan's own windows.
+placement = "floating"
 position = "bottom_center"
 layer = "overlay"
-persistent = true
 dismiss_on_outside_click = false
 keyboard_focus = "none"
 

@@ -62,6 +62,9 @@ if (args[0] === "--say") {
 } else {
   const [socket, sid, speed] = args;
   const tts = load(british(sid));
+  // The first thing a freshly loaded model says takes a few seconds to make.
+  // Better that it is this than the opening of somebody's answer.
+  speak(tts, "Ready.", Number(sid), Number(speed) || 1);
   rmSync(socket, { force: true });
   createServer({ allowHalfOpen: true }, (connection) => {
     let text = "";
