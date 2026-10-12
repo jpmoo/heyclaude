@@ -16,7 +16,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { McpClient } from "./mcp.mjs";
-import { BASICS, KOKORO, KOKORO_VOICES, readOnly, readSealed, toolAllowed, writeSealed } from "./lib.mjs";
+import { BASICS, KOKORO, KOKORO_VOICES, STARTER_TOPICS, readOnly, readSealed, toolAllowed, writeSealed } from "./lib.mjs";
 import { fileURLToPath } from "node:url";
 import { Transcript, describe } from "./history.mjs";
 import * as wake from "./wake.mjs";
@@ -196,9 +196,9 @@ const morganPrompt = () => [
   "remember straight away, without being asked and without making a speech about it. Write every note in the third",
   `person, about ${cfg.userName ?? "the user by name once you know it"}: never as I or me, which would read as being about you.`,
   "Keep the topics few, distinct",
-  "and tidy: use rewrite_topic to merge, split, rename, correct or delete them as you learn more. Prefer a handful of",
-  "broad topics, such as About me, People, Work, Projects and Preferences, over one topic per fact, and give each new",
-  "topic a description.",
+  "and tidy: use rewrite_topic to merge, split, rename, correct or delete them as you learn more. File each note under",
+  "the existing topic it belongs to, going by the topics' descriptions; do not put everything in one. Start a new topic,",
+  "with a description, only when none of them fits.",
   mcpTools.length ? "You also have tools from the user's own services; use them when a request concerns those services." : "",
   "When the user asks you to send, create, delete or change something in their own services, call the tool for it",
   "straight away, with the details filled in. Do not ask permission first: calling such a tool does not carry it out,",
@@ -818,6 +818,14 @@ function topics() {
   return readdirSync(MEMORY).filter((file) => file.endsWith(".topic")).sort().map((file) => readTopic(file.slice(0, -6)));
 }
 
+// A memory with nothing in it yet gets the starter topics.
+function seedTopics() {
+  if (topics().length) return;
+  for (const [name, description] of STARTER_TOPICS) {
+    writeTopic({ name: name.replace("{name}", cfg.userName ?? "me"), description, notes: [] });
+  }
+}
+
 function topicList() {
   const all = topics();
   if (!all.length) return "(none yet)";
@@ -1011,6 +1019,7 @@ let recalled = []; // earlier exchanges shown to the model this turn
 let seen = ""; // what was looked at for this turn, before the model was asked
 let fresh = false; // this turn's answer drew on something live: a tool, the Oracle, a look
 
+seedTopics();
 transcript.reindex();
 
 // A conversation interrupted by a restart carries on where it left off.
@@ -1050,7 +1059,9 @@ async function fileAway(turns) {
       "Save anything lasting that is not already in memory: facts about them,",
       "their people, work, projects, plans, routines and preferences, and decisions reached. Ignore small talk and",
       "anything that only mattered in the moment. Recall a topic before adding to it, so that you do not repeat what",
-      "is there; use rewrite_topic to correct what has changed and to keep topics few and broad. When there is",
+      "is there. File each note under the topic whose description it fits, not all under one. Use rewrite_topic to correct",
+      "what has changed, and when a topic has grown past about twenty notes, to split it: keep part, and remember the rest",
+      "under a new, narrower topic. When there is",
       `nothing more to save, reply with the single word done.\n\nYour memory topics:\n${topicList()}`,
     ].join(" "),
   }, { role: "user", content: `The conversation:\n\n${text}` }];

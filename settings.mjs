@@ -202,8 +202,17 @@ async function topicMenu(file) {
       continue;
     } else {
       const index = Number(choice.slice(5));
-      const what = await menu(topic.notes[index], [{ key: "edit", label: "Edit" }, { key: "delete", label: "Delete" }]);
-      if (what === "delete") {
+      const what = await menu(topic.notes[index], [
+        { key: "edit", label: "Edit" }, { key: "move", label: "Move to another topic" }, { key: "delete", label: "Delete" },
+      ]);
+      if (what === "move") {
+        const to = await menu("Move to", topicFiles().filter((name) => name !== file).map((name) => ({ key: name, label: readTopic(name).name })));
+        if (!to) continue;
+        const target = readTopic(to);
+        target.notes.push(topic.notes[index]);
+        writeTopic(to, target);
+        topic.notes.splice(index, 1);
+      } else if (what === "delete") {
         topic.notes.splice(index, 1);
       } else if (what === "edit") {
         const text = await ask("Edit the note:\n", "", topic.notes[index]);

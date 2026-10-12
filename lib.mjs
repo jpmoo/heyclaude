@@ -39,6 +39,22 @@ export const BASICS = {
   sight: ["screen", "clipboard", "camera"],
 };
 
+// The topics memory starts out with. A model files a note far more reliably
+// into a topic that exists than it invents a sensible set of its own: left to
+// itself it made either one topic per fact or one topic for everything.
+// {name} is the user's, where known.
+export const STARTER_TOPICS = [
+  ["About {name}", "Name, appearance, background: the basics."],
+  ["People", "Family, friends and colleagues, and who each of them is."],
+  ["Work", "The job, matters at work, meetings, and what colleagues do."],
+  ["Projects", "Things being built or planned."],
+  ["Home and routines", "The household, pets, and the pattern of the day and week."],
+  ["Food and cooking", "Recipes liked, tastes, and techniques."],
+  ["Creative outlets and hobbies", "What is made, played, practised or collected for its own sake."],
+  ["Preferences", "How things should be done, and how to be spoken to and helped."],
+  ["Tech setup", "Devices, software, and how they are set up."],
+];
+
 export function loadConfig() {
   return existsSync(CONFIG) ? JSON.parse(readFileSync(CONFIG, "utf8")) : {};
 }
