@@ -20,6 +20,18 @@ SCHEMA = Secret.Schema.new(
 )
 ATTRIBUTES = {"service": "heyclaude", "kind": "data-key"}
 
+if "--set" in sys.argv:
+    # Put back a key that was written down: the one line read from standard input.
+    given = sys.stdin.readline().strip()
+    try:
+        good = len(base64.b64decode(given, validate=True)) == 32
+    except ValueError:
+        good = False
+    if not good:
+        sys.exit("that is not a heyclaude key")
+    Secret.password_store_sync(SCHEMA, ATTRIBUTES, Secret.COLLECTION_DEFAULT, "heyclaude data key", given, None)
+    sys.exit(0)
+
 key = Secret.password_lookup_sync(SCHEMA, ATTRIBUTES, None)
 if key is None:
     if "--no-create" in sys.argv:

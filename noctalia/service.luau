@@ -117,6 +117,14 @@ local function onLine(line: string)
       end
       show(true)
     end
+  elseif event.type == "reminder" then
+    if event.set then
+      act("bell", if (event.text or "") ~= "" then `Reminder set: {event.text}` else "Timer set", tostring(event.when or ""))
+    else
+      -- On screen as well as aloud, in case the sound is off or nobody is near.
+      noctalia.notify(who(), tostring(event.text or "Reminder"))
+      act("bell-ringing", "Reminder", tostring(event.text or ""))
+    end
   elseif event.type == "enroll" then
     -- Teaching a voice: the settings window ticks the sentences off as they are heard.
     if event.cancelled then

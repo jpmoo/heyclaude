@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import { Transcript, describe } from "./history.mjs";
 import * as wake from "./wake.mjs";
 import { createAdmin } from "./admin.mjs";
+import * as reminders from "./reminders.mjs";
 import * as voiceprint from "./speaker.mjs";
 
 const HOME = homedir();
@@ -231,6 +232,8 @@ const morganPrompt = () => [
     : "",
   `Whole documents you have kept, to read with recall_document when a question is about one: ${documents().map((entry) => entry.title).join("; ") || "none yet"}.`,
   "A document is kept only when you are told in this turn that it has been; never say you have kept or memorised one otherwise.",
+  "Timers and reminders are set, listed and cancelled for you when the user asks, and you are shown the result; you",
+  "cannot set one by saying so. When one comes due you say it aloud, unprompted.",
   "Everything you and the user have ever said to each other is also kept, word for word. Passages from earlier",
   "conversations that look relevant are shown below when there are any; they say how things stood then, so anything",
   "that can change (a calendar, tasks, the news) is fetched again with its tool, never repeated from them.",
@@ -636,6 +639,152 @@ async function findByWords(hint) {
 // As with looking: whether the user is asking for a document to be kept is
 // put as a narrow question, and the keeping is done here, so that "I've
 // saved it" is only ever said about something that was saved.
+// ---------------------------------------------------------------- reminders
+//
+// As with looking and keeping: what the user wants is put to the model as a
+// narrow question, and the setting, listing and cancelling are done here.
+
+let due = reminders.load(); // [{ id, at, text, made }]
+let lastFired = null; // the reminder that last went off, for "snooze that"
+const REMIND_WORDS = /\b(remind|reminder|reminders|timer|timers|alarm|alarms|wake me|snooze|nudge me|don'?t let me forget)\b/i;
+
+const reminderList = () => (due.length
+  ? [...due].sort((a, b) => a.at - b.at).map((entry) => `- ${entry.text || "a timer"}: ${reminders.when(entry.at)}`).join("\n")
+  : "There are none.");
+
+let reminderTalk = 0; // when reminders were last the subject, so "cancel the one about Ana" is understood
+
+async function reminderIntent(text) {
+  // The word need not be said again while they are the subject, or when
+  // there are some set and the user speaks of cancelling or moving one.
+  const following = due.length > 0 && (Date.now() - reminderTalk < 3 * 60_000 || /\b(cancel|delete|remove|clear|drop|scrap|snooze|postpone|push back|move)\b/i.test(text));
+  if (!REMIND_WORDS.test(text) && !following) return;
+  let intent;
+  try {
+    const response = await fetch(`${cfg.ollama.url}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(30_000),
+      body: JSON.stringify({
+        model: cfg.ollama.model, stream: false, think: false, keep_alive: cfg.ollama.keepAlive,
+        format: {
+          type: "object",
+          properties: {
+            action: { type: "string", enum: ["none", "set", "list", "cancel", "change"] },
+            kind: { type: "string", enum: ["relative", "absolute"] },
+            amount: { type: "number" },
+            unit: { type: "string", enum: ["seconds", "minutes", "hours", "days"] },
+            day: { type: "string" },
+            time: { type: "string" },
+            text: { type: "string" },
+            all: { type: "boolean" },
+          },
+          required: ["action", "kind", "amount", "unit", "day", "time", "text", "all"],
+        },
+        messages: [{
+          role: "system",
+          content: "A user is speaking to an assistant that keeps timers and reminders. Say what the message asks for; do not work out "
+            + "any dates yourself. action: set to make a timer or reminder (snoozing one is setting it again); list to hear what is "
+            + "set; cancel to remove one or all; change to move one that is already set to a different time; none if the message is not asking "
+            + "for any of that. For set and change: kind is relative when "
+            + "they give a length of time from now (in ten minutes, in two hours), with amount and unit; kind is absolute when they "
+            + "give a clock time or a day, with time as 24-hour HH:MM (empty if none was said) and day as today, tomorrow, a weekday "
+            + "name, a date as YYYY-MM-DD, or empty if no day was said. text: what to remind them of, as a short phrase addressed "
+            + "to them (call Ana back, take the bread out); empty for a plain timer. For cancel and change: text is which one, in their words, "
+            + `and all is true if they mean every one. It is ${new Date().toLocaleString("en-US", { dateStyle: "full", timeStyle: "short" })}.`
+            + `${lastFired ? ` The reminder that last went off was: ${lastFired.text || "a timer"}.` : ""}`
+            + `${due.length ? ` Set at present:\n${reminderList()}` : ""}`,
+        }, { role: "user", content: text }],
+      }),
+    });
+    intent = JSON.parse((await response.json()).message.content);
+  } catch (error) {
+    console.error(`reminders: ${error.message}`);
+    return;
+  }
+  if (intent.action === "none") return;
+  reminderTalk = Date.now();
+  fresh = true; // not something to file away as a memory
+  if (intent.action === "list") return did("list_reminders", {}, reminderList());
+  // Which reminder their words point at: the one sharing most of the words
+  // that carry meaning; or, when they name none, the only one there is.
+  const FILLER = new Set(["the", "one", "about", "that", "this", "for", "to", "my", "me", "a", "an", "of", "it", "reminder", "reminders", "timer", "alarm", "please"]);
+  const wanted = words(intent.text).filter((word) => !FILLER.has(word));
+  const hits = (entry) => wanted.filter((word) => words(entry.text || "timer").includes(word)).length;
+  const ranked = [...due].sort((a, b) => hits(b) - hits(a) || a.at - b.at);
+  const meant = ranked[0] && (hits(ranked[0]) > 0 || (due.length === 1 && !wanted.length)) ? ranked[0] : null;
+
+  if (intent.action === "cancel") {
+    const gone = intent.all ? [...due] : meant ? [meant] : [];
+    if (!gone.length) return did("cancel_reminder", { which: intent.text }, `Nothing was cancelled: it was not clear which one is meant. Set at present:\n${reminderList()}`);
+    due = due.filter((entry) => !gone.includes(entry));
+    reminders.save(due);
+    return did("cancel_reminder", { which: intent.all ? "all" : intent.text }, `Cancelled, just now: ${gone.map((entry) => entry.text || "the timer").join("; ")}.`);
+  }
+  if (intent.action === "change") {
+    if (!meant) return did("change_reminder", { which: intent.text }, `Nothing was changed: it was not clear which one is meant. Set at present:\n${reminderList()}`);
+    try {
+      let at;
+      if (intent.kind === "absolute" && !String(intent.day ?? "").trim() && /^\d{1,2}:\d{2}$/.test(intent.time)) {
+        // A new time and no new day: the same day it was already set for.
+        const moved = new Date(meant.at);
+        moved.setHours(Number(intent.time.split(":")[0]), Number(intent.time.split(":")[1]), 0, 0);
+        at = moved.getTime();
+        if (at <= Date.now()) throw new Error("that time has already gone");
+      } else {
+        at = reminders.resolve(intent.kind === "relative" ? { kind: "relative", amount: intent.amount, unit: intent.unit } : { kind: "absolute", day: intent.day, time: intent.time });
+      }
+      meant.at = at;
+      reminders.save(due);
+      emit({ type: "reminder", set: true, text: meant.text, when: reminders.when(at) });
+      return did("change_reminder", { which: intent.text }, `Changed, just now: ${meant.text || "the timer"} is now ${reminders.when(at)}. Tell the user exactly that time.`);
+    } catch (error) {
+      return did("change_reminder", { which: intent.text }, `Not changed: ${error.message}. It is still ${reminders.when(meant.at)}.`);
+    }
+  }
+  const what = String(intent.text ?? "").replace(/\s+/g, " ").trim();
+  const asked = intent.kind === "relative" ? { kind: "relative", amount: intent.amount, unit: intent.unit } : { kind: "absolute", day: intent.day, time: intent.time };
+  try {
+    const at = reminders.resolve(asked);
+    due.push({ id: randomUUID().slice(0, 8), at, text: what, made: Date.now() });
+    reminders.save(due);
+    emit({ type: "reminder", set: true, text: what, when: reminders.when(at) });
+    did("set_reminder", { ...asked, text: what }, `Set, just now: ${what ? `a reminder to ${what}` : "a timer"}, ${reminders.when(at)}. Tell the user exactly that time, so they can catch a mistake.`);
+  } catch (error) {
+    did("set_reminder", { ...asked, text: what }, `Not set: ${error.message}. Ask the user to say when again.`);
+  }
+}
+
+// A reminder that has come due is said aloud, unprompted, once nothing else
+// is going on; then Morgan listens for a moment, for "thanks" or "snooze that".
+function fire(entry) {
+  due = due.filter((other) => other !== entry);
+  reminders.save(due);
+  lastFired = entry;
+  reminderTalk = Date.now();
+  const late = Date.now() - entry.at > 5 * 60_000 ? ` That was due ${reminders.when(entry.at).replace(/ \(.*\)$/, "")}.` : "";
+  const line = `${entry.text ? `Reminder: ${entry.text}.` : "Your timer is up."}${late}`;
+  emit({ type: "reminder", text: entry.text || "Your timer is up", late: Boolean(late) });
+  interrupt();
+  lastActivity = Date.now();
+  began ||= lastActivity;
+  history.push({ role: "assistant", content: line });
+  emit({ type: "assistant", text: line });
+  if (!cfg.tts) return;
+  quiet = false;
+  spokenTurn = true;
+  setState("thinking");
+  speakDelta(`${line} `);
+  speakFlush();
+  finishSpeaking();
+}
+
+setInterval(() => {
+  if (state !== "idle" || active) return;
+  const entry = due.filter((candidate) => candidate.at <= Date.now()).sort((a, b) => a.at - b.at)[0];
+  if (entry) fire(entry);
+}, 1000).unref();
+
 const KEEP_WORDS = /\b(remember|keep|save|store|memori[sz]e|hold on to|file away|learn)\b/i;
 
 async function keepIntent(text, files) {
@@ -1264,6 +1413,8 @@ async function ask(text, { typed = false, files = [] } = {}) {
     const lookup = mcpTools.length > 0 && LOOKUP_ASKED.test(text);
     let corrected = false;
     let called = false;
+    await reminderIntent(text);
+    if (mine !== turn) return;
     seen += await keepIntent(text, files);
     if (mine !== turn) return;
     const intent = await sightIntent(text);
@@ -2137,6 +2288,8 @@ function handle(line, socket) {
     }
     case "tools":
       return reply({ ok: true, calls: toolLog });
+    case "reminders":
+      return reply({ ok: true, reminders: [...due].sort((a, b) => a.at - b.at).map((entry) => ({ ...entry, when: reminders.when(entry.at) })) });
     case "status":
       return reply({
         ok: true, state, name: cfg.name, model: cfg.ollama.model, oracle: cfg.oracle.model,
@@ -2174,6 +2327,10 @@ const admin = createAdmin({
   topics, readTopic, writeTopic, topicPath, slug,
   documents, documentPath, pictures, picturePath,
   mcpAll, reconnectMcp, enroll, forgetVoice, voicesStatus,
+  reminders: {
+    list: () => [...due].sort((a, b) => a.at - b.at).map((entry) => ({ ...entry, when: reminders.when(entry.at) })),
+    cancel: (id) => { due = due.filter((entry) => entry.id !== id); reminders.save(due); },
+  },
   // Settings the running daemon cannot simply pick up: start again, once the answer has gone.
   restartSoon: () => setTimeout(() => spawn("systemctl", ["--user", "restart", "heyclaude.service"], { stdio: "ignore", detached: true }).unref(), 400),
 });

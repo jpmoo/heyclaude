@@ -15,6 +15,7 @@ its own subscription login — and relays the answer.
 | `lib.mjs` | Paths, defaults, the Oracle's login, encryption. |
 | `history.mjs` | Every exchange, sealed, with embeddings for finding earlier ones. |
 | `admin.mjs` | What the settings window may ask of the daemon: `heyclaude admin {"op": ..., "args": ...}`. |
+| `reminders.mjs` | Timers and reminders: working out when they are due. |
 | `speaker.mjs` | Whose voice is speaking, from taught voiceprints. |
 | `mcp.mjs` | A small MCP client (stdio and HTTP with a header key; no OAuth). |
 | `wake.mjs` | The wake-word spotter. |

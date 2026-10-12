@@ -104,6 +104,10 @@ export function createAdmin(d) {
     },
     "memory.picture.delete": ({ label }) => { rmSync(d.picturePath(label), { force: true }); return {}; },
 
+    // ------------------------------------------------------------ reminders
+    "reminders.list": () => ({ reminders: d.reminders.list() }),
+    "reminders.cancel": ({ id }) => { d.reminders.cancel(id); return { reminders: d.reminders.list() }; },
+
     // ------------------------------------------------------------ voice out
     "voice.list": () => ({
       kokoroInstalled: existsSync(join(KOKORO, "model.onnx")),

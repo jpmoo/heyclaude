@@ -5,7 +5,7 @@
 // heyclaude voice [name]                                                     (list voices, or switch to one)
 // heyclaude login | logout | account                                         (the Oracle's Claude login)
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { connect } from "node:net";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -25,10 +25,36 @@ if (!args.length || ["help", "-h", "--help"].includes(args[0])) {
     "heyclaude voice [name]          list voices | switch to one",
     "heyclaude login|logout|account  the Oracle's Claude login",
     "heyclaude status | watch        the daemon's state | its event stream",
+    "heyclaude reminders             timers and reminders that are set",
+    "heyclaude key export | import   write down, or put back, the key that unlocks memory",
     "heyclaude tools                 the last few tool calls and what came back",
     "heyclaude admin <json>          what the settings window uses: { op, args }",
   ].join("\n"));
   process.exit(args.length ? 0 : 2);
+}
+
+if (args[0] === "key") {
+  // The key that memory, documents, pictures and the transcript are sealed
+  // with lives in the login keyring. Written down somewhere safe, it can be
+  // put back if the keyring is ever lost.
+  const script = new URL("../keyring.py", import.meta.url).pathname;
+  if (args[1] === "export") {
+    const result = spawnSync("python3", [script, "--no-create"], { encoding: "utf8" });
+    if (result.status !== 0) { console.error("heyclaude: there is no key in the login keyring"); process.exit(1); }
+    console.error("This one line unlocks everything Morgan remembers. Keep it in a password manager or on paper, not in a file on this laptop.\n");
+    console.log(result.stdout.trim());
+  } else if (args[1] === "import") {
+    console.error("Paste the key and press Enter. It replaces any key in the login keyring, and what was sealed with that one can no longer be read.");
+    const line = readFileSync(0, "utf8").split("\n")[0];
+    const result = spawnSync("python3", [script, "--set"], { input: line + "\n", encoding: "utf8" });
+    if (result.status !== 0) { console.error(`heyclaude: ${result.stderr.trim().split("\n").pop()}`); process.exit(1); }
+    restartDaemon();
+    console.error("The key is in the login keyring, and the assistant has been restarted.");
+  } else {
+    console.error("usage: heyclaude key export | import");
+    process.exit(2);
+  }
+  process.exit(0);
 }
 
 if (args[0] === "settings") {

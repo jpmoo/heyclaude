@@ -79,7 +79,7 @@ end
 local NEEDS = {
   memory = { "memory.list" },
   voice = { "voice.list", "voices.status", "config.get" },
-  listening = { "config.get" },
+  listening = { "config.get", "reminders.list" },
   files = { "config.get" },
   connections = { "config.get", "oracle.account", "mcp.list", "ollama.models" },
 }
@@ -148,7 +148,7 @@ local function remove(key: string, tooltip: string, action)
   })
 end
 
--- A line of text that saves when Enter is pressed.
+-- A line of text, saved by pressing Enter in it or by the button beside it.
 local function field(key: string, label: string, value: string?, placeholder: string, save)
   return ui.row({ gap = 10, align = "center" }, {
     ui.row({ width = 200, align = "center" }, { ui.label({ text = label, color = "on_surface", fontSize = 12, maxWidth = 196 }) }),
@@ -158,6 +158,12 @@ local function field(key: string, label: string, value: string?, placeholder: st
         drafts[key] = text
       end,
       onSubmit = save,
+    }),
+    ui.button({
+      key = `save:{key}`, text = "Save", variant = "secondary", controlSize = "sm",
+      onClick = function()
+        save(if drafts[key] ~= nil then drafts[key] else (value or ""))
+      end,
     }),
   })
 end
@@ -294,17 +300,17 @@ local function memoryTab()
     end
 
     table.insert(out, card(current.name, {
-      field("describe", "What belongs here", current.description, "A line saying what goes in this topic", function(text)
+      field(`describe:{current.name}`, "What belongs here", current.description, "A line saying what goes in this topic", function(text)
         change("memory.topic.rename", { topic = current.name, name = current.name, description = text }, "Description changed.")
       end),
-      field("rename", "Its name", current.name, "", function(text)
+      field(`rename:{current.name}`, "Its name", current.name, "", function(text)
         view.topic = text
         change("memory.topic.rename", { topic = current.name, name = text, description = current.description }, "Topic renamed.")
       end),
       ui.separator({ color = "outline/0.3" }),
       ui.column({ gap = 6 }, notes),
       ui.input({
-        key = `addnote#{version}`, placeholder = "Add a note: type it and press Enter", controlSize = "sm",
+        key = `addnote:{current.name}#{version}`, placeholder = "Add a note: type it and press Enter", controlSize = "sm",
         onSubmit = function(text)
           change("memory.note.add", { topic = current.name, text = text }, "Note added.")
         end,
@@ -574,7 +580,25 @@ local function listeningTab()
     set({ sight = now })
   end
 
+  local set = {}
+  for _, entry in ipairs((D["reminders.list"] or {}).reminders or {}) do
+    table.insert(set, ui.row({ key = `r:{entry.id}`, gap = 8, align = "center" }, {
+      ui.glyph({ name = "bell", size = 16, color = accent }),
+      ui.column({ gap = 0, flexGrow = 1 }, {
+        ui.label({ text = if (entry.text or "") ~= "" then entry.text else "A timer", color = "on_surface", fontSize = 12, fontWeight = "bold" }),
+        hint(entry.when),
+      }),
+      remove(`unremind:{entry.id}`, "Cancel this one", function()
+        change("reminders.cancel", { id = entry.id }, "Cancelled.")
+      end),
+    }))
+  end
+  if #set == 0 then
+    table.insert(set, hint(`None. Say “remind me to…” or “set a timer for…”, and {who()} speaks up when it is due.`))
+  end
+
   return {
+    card("Timers and reminders", set),
     card("Who is who", {
       field("name", "The assistant's name", config.name, `{who()}`, function(text)
         set({ name = text })
@@ -585,7 +609,7 @@ local function listeningTab()
       field("style", "Manner of speaking", config.style, "Describe how it should talk", function(text)
         set({ style = text })
       end),
-      hint("Press Enter in a box to save it."),
+      hint("Press Enter in a box, or its Save button, to save it."),
     }),
     card("Waking and interrupting", {
       field("wakeWord", "Wake phrase", config.wakeWord, "Empty turns it off", function(text)
