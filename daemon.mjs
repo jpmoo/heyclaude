@@ -18,16 +18,17 @@ import { randomUUID } from "node:crypto";
 import { McpClient } from "./mcp.mjs";
 import { BASICS, KOKORO, KOKORO_VOICES, STARTER_TOPICS, readOnly, readSealed, toolAllowed, writeSealed } from "./lib.mjs";
 import { fileURLToPath } from "node:url";
-import { Transcript, describe } from "./history.mjs";
+import { Transcript, describe, describeThread } from "./history.mjs";
 import * as wake from "./wake.mjs";
 import { createAdmin } from "./admin.mjs";
 import * as reminders from "./reminders.mjs";
+import { calculate } from "./calc.mjs";
 import * as voiceprint from "./speaker.mjs";
 
 const HOME = homedir();
 const CONFIG_HOME = join(HOME, ".config", "heyclaude");
 const RUNTIME = process.env.XDG_RUNTIME_DIR ?? "/tmp";
-const SOCKET = join(RUNTIME, "heyclaude.sock");
+const SOCKET = process.env.HEYCLAUDE_SOCKET ?? join(RUNTIME, "heyclaude.sock");
 const WORKDIR = join(HOME, ".local", "share", "heyclaude", "work");
 const MEMORY = process.env.HEYCLAUDE_MEMORY ?? join(HOME, ".local", "share", "heyclaude", "memory");
 
@@ -57,6 +58,8 @@ const defaults = {
   oracle: {
     claude: "claude",
     model: BASICS.oracleModel,
+    // The smaller model the quick Oracle runs on.
+    quickModel: "haiku",
     // The only built-in tools the Oracle has: no shell, no file edits, no
     // subagents. MCP tools are added by name in allowedTools; anything else
     // that needs approval is refused, because nobody is there to approve it.
@@ -139,11 +142,22 @@ const defaults = {
   // Every exchange is kept and embedded with this model, on the Ollama server.
   // Earlier exchanges scoring at least recallScore against what was just said
   // are shown to the model unasked; it can search for more.
+  // Up to this many characters of memory are shown to the model whole on
+  // every turn. Past it, the notes that bear on the turn are picked out by
+  // meaning: up to notesShown of them scoring at least noteScore.
+  memoryInFull: 4000,
+  notesShown: 14,
+  noteScore: 0.5,
+  // Sort each question by kind before answering, and pass facts about the
+  // world to the Oracle. The local model cannot tell what it does not know;
+  // it can tell what kind of question it has been asked.
+  router: true,
   embedModel: BASICS.embedModel,
   // Opens the chat window. Set by the daemon at runtime, so no Hyprland
   // configuration file is touched; null leaves the keyboard alone.
   hotkey: BASICS.hotkey,
   recallScore: 0.58,
+  threadScore: 0.55,
 };
 
 const configPath = process.env.HEYCLAUDE_CONFIG ?? join(CONFIG_HOME, "config.json");
@@ -172,8 +186,26 @@ const voiceFile = join(SPEECH, "voices", `${cfg.voice}.onnx`);
 let voiceRate = 22050;
 try { voiceRate = JSON.parse(readFileSync(`${voiceFile}.json`, "utf8")).audio.sample_rate; } catch { /* Piper's usual rate */ }
 
+// What changes from one turn to the next: said with the turn, at the end of
+// what the model reads, and not in its instructions at the start. The server
+// keeps its reading of everything up to the first thing that differs, so
+// with this in the instructions every turn was read again from the top, and a
+// long conversation, or one with a document in it, was read whole each time.
+const turnNotes = () => [
+  quiet
+    ? "This turn was typed, and your answer will be read on screen, not heard: use markdown where it helps (lists, bold, code blocks, links), and be as long as the question deserves, no longer."
+    : "This turn was spoken, and your answer will be heard: plain spoken sentences, no markdown, lists, headings, code, emoji or URLs. Be brief, usually one to three sentences, and say more only when asked.",
+  `It is ${new Date().toLocaleString("en-US", { dateStyle: "full", timeStyle: "short" })}. The dates: ${reminders.calendar()}.`,
+  interviewing ? INTERVIEW_PROMPT : "",
+  seen.trim(),
+  remembered.length || recalled.length
+    ? `From earlier conversations, possibly relevant:\n${[...remembered.map((hit) => describeThread(hit)), ...recalled.map((hit) => describe(hit))].join("\n")}`
+    : "",
+  memoryInFull() ? "" : `From your memory:\n${picked || "(nothing that bears on this)"}\n\nYour memory topics:\n${topicList()}`,
+].filter(Boolean).join("\n\n");
+
 // The Kokoro voice runs as a helper that keeps its model loaded.
-const KOKORO_SOCKET = join(RUNTIME, "heyclaude-tts.sock");
+const KOKORO_SOCKET = process.env.HEYCLAUDE_SOCKET ? `${process.env.HEYCLAUDE_SOCKET}.tts` : join(RUNTIME, "heyclaude-tts.sock");
 let kokoroHelper = null;
 let kokoroReady = false;
 
@@ -193,18 +225,29 @@ const morganPrompt = () => [
   `You are ${cfg.name}, a voice assistant on the user's Linux desktop. Everything you write is read aloud by a speech`,
   "synthesizer, and the user's words reach you through speech recognition, so expect misheard words and work out what",
   "was meant.",
-  quiet
-    ? "This turn was typed, and your answer will be read on screen, not heard: use markdown where it helps (lists, bold, code blocks, links), and be as long as the question deserves, no longer."
-    : "Answer in plain spoken sentences: no markdown, lists, headings, code, emoji or URLs. Be brief, usually one to three sentences, and say more only when asked.",
+  "Each turn says whether it was spoken or typed, and that decides the form of your answer.",
   cfg.style,
   "About the user's own life, say only what is in your memory, in this conversation, or in what a tool returned: never",
   "fill in a person, a hobby, a place or any other detail of their life that you have not been given.",
-  "Answer from your own knowledge whenever you are confident. You can also consult the Oracle, a far more capable",
-  "intelligence that can search the web. Consult it for anything current or recent, anything you are not sure of,",
-  "and anything that needs deep expertise or careful reasoning. Do not guess where the Oracle would know.",
-  "When you relay what the Oracle told you, say that it came from the Oracle, in your own words and just as briefly.",
-  "You keep a long-term memory about the user, organized into topics that you create and curate yourself. Only the",
-  "topic list is shown to you; call recall to read a topic before answering anything it might bear on. When the user",
+  "Never say that you would need to check, look up or recall something, and never ask whether you should: when the",
+  "answer may be in your memory, a kept document, an earlier conversation or one of the user's services, look there in",
+  "the same turn, without comment, and answer from what you find.",
+  "You can consult the Oracle, a far more capable intelligence that can search the web. Feeling sure is not a reason to",
+  "answer yourself: you are a small model, and you are as sure of what you have wrong as of what you have right. Go by",
+  "the kind of question instead. Answer yourself: conversation, opinions, ideas, wording and writing; anything about the",
+  "user, which comes from memory and their services; and schoolbook knowledge that never changes, such as a capital or",
+  "the author of a classic. Consult the Oracle, and do not answer from what you believe: any number, count, measurement,",
+  "date or statistic that is not schoolbook; a particular film, book, product, company, place or person; how something",
+  "technical works in detail; anything medical, legal, or about money or tax; anything current or recent, such as news,",
+  "results, prices, versions and this year's rules; and anything that needs deep expertise or careful reasoning. If in",
+  "doubt about which kind it is, consult.",
+  "When you relay what the Oracle told you, say once that it came from the Oracle and then give the substance, in your",
+  "own words and just as briefly. Speak to the user as you, never about them by name. Never announce what you are about",
+  "to do (let me ask, let me check, I need to clarify): do it, and say only the answer.",
+  "You keep a long-term memory about the user, in notes organized into topics that you create and curate yourself.",
+  memoryInFull()
+    ? "All of it is shown below, under Your memory: answer from it directly, without saying that you are looking. When the user"
+    : "It is too large to show whole, so the notes most likely to bear on what was just said are picked out for you and shown below, under From your memory, with the list of topics. Answer from those notes directly; call recall to read a whole topic only when they are not enough. When the user",
   "tells you something lasting about themselves, their people, work, projects, routines or preferences, save it with",
   "remember straight away, without being asked and without making a speech about it. What a tool, the Oracle or a",
   "look shows you is not a memory: never save calendar entries, task lists, search results or what was on screen.",
@@ -215,6 +258,15 @@ const morganPrompt = () => [
   "the existing topic it belongs to, going by the topics' descriptions; do not put everything in one. Start a new topic,",
   "with a description, only when none of them fits.",
   mcpTools.length ? "You also have tools from the user's own services; use them when a request concerns those services." : "",
+  // Asked for something a switched-off tool would do, the model hunted for another way and then said only that it could not.
+  withheld().length
+    ? `These tools exist on the user's services but are switched off for you: ${withheld().join(", ")}. When the user asks for something one of them does, do not look for another way: say plainly that it is switched off for you, and that they can switch it on in settings, under Connections.`
+    : "",
+  "When you make or change something for the user, put into it only what they said: the title or the words they gave,",
+  "and nothing of your own. Do not add tags, projects, due dates, priorities, notes or descriptions that they did not",
+  "ask for. Once it is done you may ask, in a few words, whether they would like to add anything such as a due date.",
+  "You can carry such things out: they are done for you the moment the user says yes. Never tell the user that you",
+  "can only prepare actions, or that they must do it themselves, unless the tool for it is switched off.",
   "When the user asks you to send, create, delete or change something in their own services, call the tool for it",
   "straight away, with the details filled in. Do not ask permission first: calling such a tool does not carry it out,",
   "it only puts the action forward, and you are then told to check with the user. It is carried out for you when they",
@@ -241,13 +293,11 @@ const morganPrompt = () => [
   "that can change (a calendar, tasks, the news) is fetched again with its tool, never repeated from them.",
   "Use search_conversations to look further,",
   "by subject, by date or both, whenever the user refers to something said before that you cannot see.",
-  `It is ${new Date().toLocaleString("en-US", { dateStyle: "full", timeStyle: "short" })}.`,
-  "Never work a date out yourself. These are the dates, already worked out; whenever the user names a day and a tool",
-  `takes one, give the tool the date from this list, as YYYY-MM-DD: ${reminders.calendar()}.`,
-  interviewing ? INTERVIEW_PROMPT : "",
-  seen ? `\n\n${seen}` : "",
-  recalled.length ? `\n\nFrom earlier conversations, possibly relevant:\n${recalled.map((hit) => describe(hit)).join("\n")}` : "",
-  `\n\nYour memory topics:\n${topicList()}`,
+  "Never work a date out yourself. Each turn comes with the dates already worked out; whenever the user names a day",
+  "and a tool takes one, give the tool the date from that list, as YYYY-MM-DD.",
+  "Each turn ends with notes from the system, in square brackets. The user did not write them and cannot see them;",
+  "they tell you what has just been done for you, what applies to this turn, and what to do. Follow them.",
+  memoryInFull() ? `\n\nYour memory:\n${memoryText()}` : "",
 ].join(" ");
 
 const INTERVIEW_PROMPT = [
@@ -259,12 +309,29 @@ const INTERVIEW_PROMPT = [
   "When the user wants to stop or you have covered the ground, tidy the topics, call end_interview and say goodbye.",
 ].join(" ");
 
+// The quick Oracle: a smaller model with no tools, asked for facts about the
+// world that the local model would otherwise answer from a hunch.
+const quickPrompt = () => [
+  `You are the Oracle. ${cfg.name}, a small local voice assistant, passes you questions of fact that it should not answer`,
+  "from memory. Each message gives the recent conversation and the question.",
+  cfg.userName ? `(The user is ${cfg.userName}.)` : "",
+  "You cannot look anything up. If the answer depends on anything recent or changing (news, results, reviews, prices,",
+  "versions, schedules, who currently holds a post, this year's limits or rates), or you are not confident of the facts,",
+  "reply with the single word SEARCH and nothing else. Otherwise answer accurately and compactly in plain prose with",
+  `no markdown, lists or URLs, addressed to the user as you: ${cfg.name} will relay it in a sentence or three, so lead`,
+  "with the answer and include only what matters. Where the matter is legal, medical or financial, give the general",
+  "position and say in a clause that the particulars of their case could change it.",
+].join(" ");
+
 const oraclePrompt = () => [
   `You are the Oracle. ${cfg.name}, a small local voice assistant, consults you on its user's behalf when a question is`,
   cfg.userName ? `(The user is ${cfg.userName}.)` : "",
   `beyond it. Each message gives the recent conversation and ${cfg.name}'s question. Answer accurately and compactly in`,
-  `plain prose with no markdown, lists or URLs: ${cfg.name} will relay your answer aloud in a sentence or three, so lead`,
-  "with the answer and include only what matters. Say plainly when you are unsure or could not find something.",
+  `plain prose with no markdown, lists or URLs: ${cfg.name} will relay your answer in a sentence or three, so lead`,
+  "with the answer and include only what matters. Write it as the answer itself, addressed to the user as you: not as a",
+  `note to ${cfg.name} about the user, and never calling the user by name or he or she. If the question could mean more`,
+  "than one thing, answer the likeliest and mention the other in a clause; do not ask which was meant.",
+  "Say plainly when you are unsure or could not find something.",
 ].join(" ");
 
 const MORGAN_TOOLS = [{
@@ -320,6 +387,14 @@ const MORGAN_TOOLS = [{
       },
       required: ["topic", "description", "notes"],
     },
+  },
+}, {
+  type: "function",
+  function: {
+    name: "calculate",
+    description: "Work out arithmetic exactly. Use it for every sum, percentage, average or conversion, however easy it looks: "
+      + "never do arithmetic in your head. Write the sum out, as in 17% of 3480, (450 + 50) * 0.74, 100 - 15%, sqrt(2), average(72, 88, 95).",
+    parameters: { type: "object", properties: { expression: { type: "string", description: "The sum, written out" } }, required: ["expression"] },
   },
 }, {
   type: "function",
@@ -906,6 +981,7 @@ async function learnFrom(content, source) {
       .filter((note) => note && !held.has(plain(note)) && held.add(plain(note)));
     if (!fresh.length) continue;
     writeTopic({ ...topic, notes: [...topic.notes, ...fresh.map((note) => `${note} (${today})`)] });
+    noted.push(...fresh.map((note) => noteKey(name, note)));
     filed[name] = fresh;
   }
   const total = Object.values(filed).reduce((sum, notes) => sum + notes.length, 0);
@@ -1008,7 +1084,8 @@ function setState(next) {
 let escapeBound = false;
 
 function bindEscape(want) {
-  if (want === escapeBound || !process.env.HYPRLAND_INSTANCE_SIGNATURE) return;
+  // A trial run on a socket of its own leaves the keyboard alone.
+  if (want === escapeBound || !process.env.HYPRLAND_INSTANCE_SIGNATURE || process.env.HEYCLAUDE_SOCKET) return;
   escapeBound = want;
   const stop = join(HOME, ".local", "bin", "heyclaude");
   execFile("hyprctl", ["keyword", ...(want ? ["bindn", `, escape, exec, ${stop} stop`] : ["unbind", ", escape"])], () => {});
@@ -1064,13 +1141,126 @@ function seedTopics() {
   }
 }
 
+// Everything remembered, as text. While it is small it is simply put in
+// front of the model whole: asked to choose which topic to read, it often
+// chose the wrong one, and each wrong choice was another round trip.
+function memoryText() {
+  return topics().filter((topic) => topic.notes.length)
+    .map((topic) => `${topic.name} (${topic.description})\n${topic.notes.map((note) => `- ${note}`).join("\n")}`).join("\n\n") || "(nothing yet)";
+}
+
+const memoryInFull = () => memoryText().length <= cfg.memoryInFull;
+
+// Picking out what matters from a memory too large to show whole. Every note
+// has an embedding; each turn, the notes nearest in meaning to what was said
+// are chosen here and put in front of the model, grouped by topic. Topics
+// keep the memory in order and let a whole subject be read at once; they are
+// not what the choosing depends on, which is why it stays quick as they grow.
+const noteVectors = new Map(); // note text -> its embedding
+let picked = ""; // the notes chosen for the turn in hand
+
+async function pickNotes(text) {
+  if (memoryInFull()) return "";
+  const all = topics().flatMap((topic) => topic.notes.map((note) => ({ topic: topic.name, note })));
+  // Embeddings are made once per note and kept for as long as the daemon runs.
+  const missing = [...new Set(all.map((entry) => entry.note).filter((note) => !noteVectors.has(note)))];
+  for (let at = 0; at < missing.length; at += 64) {
+    const batch = missing.slice(at, at + 64);
+    const response = await fetch(`${cfg.ollama.url}/api/embed`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(60_000),
+      body: JSON.stringify({ model: cfg.embedModel, input: batch.map((note) => `search_document: ${note}`) }),
+    });
+    if (!response.ok) throw new Error(`embedding notes failed: HTTP ${response.status}`);
+    (await response.json()).embeddings.forEach((vector, index) => {
+      let norm = 0;
+      for (const x of vector) norm += x * x;
+      norm = Math.sqrt(norm) || 1;
+      noteVectors.set(batch[index], Float32Array.from(vector, (x) => x / norm));
+    });
+  }
+  const query = await transcript.embed(`search_query: ${text}`);
+  const wanted = new Set(words(text).filter((word) => word.length >= 4));
+  const scored = all.map((entry) => {
+    const vector = noteVectors.get(entry.note);
+    let meaning = 0;
+    for (let i = 0; i < query.length; i++) meaning += query[i] * vector[i];
+    // Names and exact words are where meaning alone lets you down.
+    const shared = words(entry.note).filter((word) => wanted.has(word)).length;
+    return { ...entry, score: meaning + 0.06 * Math.min(shared, 3) };
+  }).sort((a, b) => b.score - a.score);
+  // Who the user is and how they like to be dealt with bear on every turn.
+  const always = (topic) => /^about\b/i.test(topic) || /^preferences$/i.test(topic);
+  const chosen = [...all.filter((entry) => always(entry.topic)).slice(0, 14), ...scored.filter((entry) => !always(entry.topic) && entry.score >= cfg.noteScore).slice(0, cfg.notesShown)];
+  if (process.env.HEYCLAUDE_DEBUG) console.error("notes", scored.slice(0, 6).map((entry) => `${entry.score.toFixed(2)} ${entry.note.slice(0, 40)}`));
+  const byTopic = new Map();
+  for (const entry of chosen) byTopic.set(entry.topic, [...(byTopic.get(entry.topic) ?? []), entry.note]);
+  return [...byTopic].map(([topic, notes]) => `${topic}\n${notes.map((note) => `- ${note}`).join("\n")}`).join("\n\n");
+}
+
 function topicList() {
   const all = topics();
   if (!all.length) return "(none yet)";
   return all.map((topic) => `- ${topic.name}: ${topic.description} (${topic.notes.length} notes)`).join("\n");
 }
 
-function memoryTool(name, args) {
+// Which exchanges a note came from, kept beside the notes: so that when an
+// answer is marked wrong, the notes that may have been taken from it can be
+// put in front of the user to keep or delete. Nothing is deleted on that
+// evidence alone.
+const SOURCES = join(MEMORY, "sources.sealed");
+let provenance = { notes: {}, kept: {} }; // notes: key -> [exchange times]; kept: exchange time -> [keys the user chose to keep]
+try { if (existsSync(SOURCES)) provenance = { notes: {}, kept: {}, ...JSON.parse(readSealed(SOURCES)) }; } catch { /* start again */ }
+const noteKey = (topic, note) => `${slug(topic)}|${words(String(note).replace(/\(\d{4}-\d{2}-\d{2}\)\s*$/, "")).join(" ")}`;
+let noted = []; // notes saved during the turn in hand, to be tied to its exchange once that is filed
+
+function sourced(keys, times) {
+  if (!keys.length || !times.length) return;
+  for (const key of keys) provenance.notes[key] = [...new Set([...(provenance.notes[key] ?? []), ...times])];
+  writeSealed(SOURCES, JSON.stringify(provenance));
+}
+
+// Notes that may have come from an exchange, for the user to look over.
+function notesFrom(t) {
+  const item = transcript.items.find((entry) => entry.t === t);
+  if (!item) return [];
+  const kept = new Set(provenance.kept[t] ?? []);
+  const said = new Set(words(`${item.user} ${item.morgan}`).filter((word) => word.length >= 4));
+  const out = [];
+  for (const topic of topics()) {
+    for (const note of topic.notes) {
+      const key = noteKey(topic.name, note);
+      const from = provenance.notes[key];
+      if (!from?.includes(t) || kept.has(key)) continue;
+      // Saved in that very turn: it came from it. Saved when the whole
+      // conversation was filed: only if it shares its matter with this exchange.
+      if (from.length > 1) {
+        const vector = noteVectors.get(note);
+        let like = 0;
+        if (vector && item.v) for (let i = 0; i < vector.length; i++) like += vector[i] * item.v[i];
+        const shared = words(note).filter((word) => said.has(word)).length;
+        if (!(like >= 0.5 || shared >= 3)) continue;
+      }
+      out.push({ topic: topic.name, note });
+    }
+  }
+  return out;
+}
+
+// The user's verdict on one such note.
+function settleNote(t, topic, note, action) {
+  if (action === "delete") {
+    const found = readTopic(topic);
+    if (found) writeTopic({ ...found, notes: found.notes.filter((entry) => entry !== note) });
+  } else {
+    provenance.kept[t] = [...new Set([...(provenance.kept[t] ?? []), noteKey(topic, note)])];
+    writeSealed(SOURCES, JSON.stringify(provenance));
+  }
+  emit({ type: "review", t, notes: notesFrom(t) });
+}
+
+function memoryTool(name, args, sources = null) {
   const topic = String(args.topic ?? "").trim();
   if (name === "end_interview") {
     interviewing = false;
@@ -1094,6 +1284,9 @@ function memoryTool(name, args) {
       description: existing?.description || args.description || "",
       notes: [...(existing?.notes ?? []), `${note} (${today})`],
     });
+    // Tied to the exchanges it came from: those given, or the turn in hand once it is filed.
+    const key = noteKey(existing?.name ?? topic, note);
+    if (sources) sourced([key], sources); else noted.push(key);
     emit({ type: "memory", topic: existing?.name ?? topic, note });
     return existing ? "Saved." : `Saved, in the new topic ${topic}.`;
   }
@@ -1116,6 +1309,11 @@ const mcpClients = new Map();
 let mcpTools = []; // in Ollama's tool format, named server__tool
 
 const mcpAll = new Map(); // per server: every tool it offers, or why it could not be reached
+
+// Tools the servers offer that the model has not been given.
+const withheld = () => [...mcpAll].flatMap(([server, known]) => (known.tools ?? [])
+  .filter((tool) => !mcpTools.some((given) => given.function.name === `${server}__${tool.name}`))
+  .map((tool) => tool.name));
 
 async function connectMcpServers() {
   for (const [name, spec] of Object.entries(cfg.mcpServers)) {
@@ -1165,12 +1363,20 @@ async function reconnectMcp() {
 const toolLog = []; // the last few tool calls and the start of what came back
 const changes = new Set(); // names of the tools that change things
 let proposals = []; // [{ name, args }], all put forward in the same turn
+let agreedTo = ""; // a question the user has just said yes to, asked in words with no proposal behind it
 let acted = false; // something was put forward or carried out in this turn
 
 const CHANGE_ASKED = /\b(add|create|make|new|delete|remove|archive|unarchive|update|change|edit|rename|move|mark|complete|finish|send|reply|forward|schedule|reschedule|cancel|set|put|tag|assign|draft|post|save)\b/i;
 const CHANGE_CLAIMED = /\b(i've|i have|i just|i went ahead|has been|have been|is now|are now|it's been|all set|all done|taken care of|successfully)\b[^.?!]*\b(added|created|made|deleted|removed|archived|unarchived|updated|changed|edited|renamed|moved|marked|completed|sent|replied|forwarded|scheduled|rescheduled|cancelled|canceled|set|tagged|assigned|drafted|posted|saved|done)\b|\ball set\b|\bsuccessfully\b/i;
+const CHANGE_SPOKEN_OF = /\b(i['’]?m|i am|i['’]ll|i will|i['’]m about to|i['’]m going to|let me)\b[^.?!]{0,40}\b(creat|add|remov|delet|updat|chang|renam|mov|archiv|mark|schedul|tagg|sett)(e|es|ed|ing)?\b|,\s*(ok|okay|alright|all right|right)\?\s*$/i;
 const PERMISSION_ASKED = /\b(shall i|should i|want me to|would you like me to|do you want me to|like me to|is that (ok|okay|right|correct)|does that (work|sound)|sound (good|right)|go ahead|proceed|confirm)\b[^.!]*\?/i;
 const LOOKUP_ASKED = /\b(my|the) (calendar|schedule|agenda|diary|tasks?|task list|to-?do( list)?s?|meetings?|appointments?|events?|projects?|notes?|inbox)\b|\b(what's|what is|anything|what do i have) (on|due|scheduled|planned|coming up)\b/i;
+const PUTS_OFF = /\b(i(['’]d| would| will|['’]ll)? (need|have) to (check|look|search|recall|consult|review|pull|go through|see|clarify|verify|confirm|find out|ask)|let me (ask|consult|clarify|verify|confirm|find out|get|grab)|i(['’]ll| will) (ask|consult|find out)|i(['’]d| would) (need|have|want) to (first )?(check|look|search|recall|review)|let me (check|look|search|recall|pull|see|review|go through)|i(['’]ll| will| can| could) (check|look (that|it|this|in|at|through|up)|search|recall|pull)|i don['’]t have (that|this|it|any|access)[^.]*\b(memory|notes|record|information)|would you like me to (check|look|search|recall))\b/i;
+const ORACLE_SAYS = "The Oracle says: ";
+const ORACLE_RELAY = "The Oracle answered as follows. Give the user this answer now. Speak to them directly, as you: never of them by name or as he, she or they, even where the Oracle's wording does. Say once, in passing, that it comes from the Oracle, and then give the substance. Do not say what you did or are about to do, do not restate their question, and do not offer alternatives they did not ask about.";
+const ORACLE_ASKED = /\b(ask|consult|check with|run (it|this|that) (by|past)|see what|find out from|look (it|this|that) up with)\b[^.?!]{0,30}\boracle\b|\boracle\b[^.?!]{0,20}\b(say|says|think|thinks|know|knows)\b/i;
+const CURRENT_ASKED = /\b(this (weekend|week|season|month|year)|last (night|week|weekend|game|match|month)|yesterday['’]?s?|tonight['’]?s?|latest|newest|most recent|recently|right now|currently|these days|score[sd]?|standings|who won|did .{2,40} win|how did .{2,60} do\b|news|headlines|weather|forecast|temperature outside|stock price|share price|exchange rate|election|release date|new(est)? version|reviews?|reviewed|reception|received|box office|rotten tomatoes|metacritic|ratings?|came out|coming out|just released|premiered?|new (movie|film|album|book|show|series|season|episode|game|phone|model|release))\b/i;
+const SUM_ASKED = /(\bpercent|%|\btimes\b|\bmultipl|\bdivided?\b|\bplus\b|\bminus\b|\bsum of\b|\badd(ed)? up\b|\btotal\b|\baverage\b|\bsquare root\b|\bsquared\b|\bcubed\b|\bhow much is\b|\bwhat(['’]s| is) \d|[\d)]\s*[+*\/×÷^]\s*[\d(]|\d\s+-\s+\d|\bsplit\b[^.?]*\b(ways|between|among)\b|\btip\b)/i;
 const TIMELY = /\b(today|tonight|tomorrow|yesterday|now|currently|current|latest|newest|recent|this (morning|afternoon|evening|week|weekend|month|year)|next (week|month|year|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|on (monday|tuesday|wednesday|thursday|friday|saturday|sunday)|calendar|schedule|due|overdue|weather|news|price|score)\b/i;
 const YES = /^(yes|yeah|yep|yup|sure|ok|okay|alright|all right|right|correct|absolutely|definitely|please)?( ?(yes|please|do it|do that|go ahead|go for it|go on|confirm|confirmed|thats right|that is right|thats correct|sounds good|thats fine|fine))*( ?(please|thanks|thank you))?$/;
 
@@ -1178,8 +1384,12 @@ const YES = /^(yes|yeah|yep|yup|sure|ok|okay|alright|all right|right|correct|abs
 // model should be told about the proposal, if there was one.
 async function settleProposal(text) {
   const said = words(text.replace(new RegExp(cfg.name, "gi"), "")).join(" ");
+  agreedTo = "";
   // A yes with nothing waiting: the model asked permission in words alone.
   if (!proposals.length && changes.size && said && YES.test(said)) {
+    // What it asked, so that the same thing, called for now, can go ahead on this yes.
+    const asked = history.filter((message) => message.role === "assistant" && message.content).at(-1)?.content ?? "";
+    if (/\?\s*$/.test(asked.trim())) agreedTo = asked;
     return "The user has said yes, but nothing has been put forward, so nothing has been carried out. If you were asking "
       + "permission to change something, call its tool now, and do not say it is done.";
   }
@@ -1201,6 +1411,69 @@ async function settleProposal(text) {
   }
   acted = true;
   return "What the user agreed to has just been carried out, as the results above show. Do not call those tools again; tell them briefly how it went.";
+}
+
+// What kind of question this is. The model is asked to sort it, which it does
+// well, and not whether it knows the answer, which it does badly.
+async function kindOf(text) {
+  try {
+    const before = history.filter((message) => message.role !== "tool" && message.content).slice(-3, -1)
+      .map((message) => `${message.role === "user" ? "User" : cfg.name}: ${message.content.slice(0, 300)}`).join("\n");
+    const response = await fetch(`${cfg.ollama.url}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(20_000),
+      body: JSON.stringify({
+        model: cfg.ollama.model, stream: false, think: false, keep_alive: cfg.ollama.keepAlive, options: { temperature: 0 },
+        format: { type: "object", properties: { kind: { type: "string", enum: ["yours", "conversation", "settled", "world", "current"] } }, required: ["kind"] },
+        messages: [{
+          role: "system",
+          content: "Sort the user's latest message to a voice assistant into one kind. Do not answer it.\n"
+            + "yours: about the user's own life, people, things, plans, notes, files or earlier conversations; or an instruction to the "
+            + "assistant to remember, set, make, change or do something; or about the assistant itself.\n"
+            + "conversation: small talk, feelings, opinions, jokes, brainstorming, naming things, wording, writing or rewriting, advice "
+            + "on how to go about something where there is no single right answer.\n"
+            + "world: any question of fact about the world that is not about what is happening now: a particular film, book, "
+            + "piece of music, product, company, place or person; a figure, count, measurement or statistic; how something "
+            + "works; anything in science, medicine, law, money or tax. This is the usual kind for a question of fact.\n"
+            + "settled: only a fact a ten-year-old could answer without looking it up, such as the capital of a large country, "
+            + "how many days are in a week, or who wrote a play taught in every school. Nothing about law, medicine, money, "
+            + "technology or a particular modern work is ever settled. If there is any doubt, it is world, not settled.\n"
+            + "current: depends on what is happening now or lately: news, results, scores, reviews, prices, weather, versions, "
+            + "schedules, who holds a post, this year's rates or limits.",
+        }, { role: "user", content: `${before ? `Earlier:\n${before}\n\n` : ""}The message to sort:\n${text}` }],
+      }),
+    });
+    return JSON.parse((await response.json()).message.content).kind;
+  } catch (error) {
+    console.error(`router: ${error.message}`);
+    return null;
+  }
+}
+
+// The sum in what the user said, written out for the calculator; "" if there is none.
+async function sumIntent(text) {
+  try {
+    const response = await fetch(`${cfg.ollama.url}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(30_000),
+      body: JSON.stringify({
+        model: cfg.ollama.model, stream: false, think: false, keep_alive: cfg.ollama.keepAlive,
+        format: { type: "object", properties: { expression: { type: "string" } }, required: ["expression"] },
+        messages: [{
+          role: "system",
+          content: "Write the arithmetic the user is asking for as one expression for a calculator, and do not work it out. Use only "
+            + "numbers, + - * / ^, brackets, and % for per cent, as in: 17% * 3480; (186 * 1.20) / 4; 350 / 450 * 100; 100 - 15%; "
+            + "sqrt(144); average(72, 88, 95). Give an empty expression if the message does not ask for a calculation.",
+        }, { role: "user", content: text }],
+      }),
+    });
+    return String(JSON.parse((await response.json()).message.content).expression ?? "").trim();
+  } catch (error) {
+    console.error(`sums: ${error.message}`);
+    return "";
+  }
 }
 
 // The question put to the user about a proposal. The model that made the
@@ -1240,15 +1513,73 @@ async function proposalQuestion() {
   }
 }
 
+const plain = (text) => words(String(text)).join(" ");
+
+// The words in a tool's arguments that say what is being done: names and
+// titles, not ids.
+function particulars(args) {
+  const out = [];
+  const walk = (value) => {
+    if (typeof value === "string") { if (value.trim().length >= 3 && !/^[0-9a-f-]{16,}$/i.test(value.trim()) && !/^\d{4}-\d{2}-\d{2}/.test(value)) out.push(value); }
+    else if (Array.isArray(value)) value.forEach(walk);
+    else if (value && typeof value === "object") Object.values(value).forEach(walk);
+  };
+  walk(args ?? {});
+  return out;
+}
+
+// When something is being made, only what the user said goes into it. Left to
+// itself the model added tags, projects and notes of its own devising. An
+// argument the tool does not require, whose words the user never spoke in
+// this conversation, is taken out (dates are kept if a day was spoken of).
+// Returns the names of what was taken out.
+function pare(name, args) {
+  const [server, tool] = name.split(/__(.*)/s);
+  if (!/creat|add|append|new/i.test(tool)) return [];
+  const schema = mcpAll.get(server)?.tools?.find((entry) => entry.name === tool)?.inputSchema ?? {};
+  const required = new Set(schema.required ?? []);
+  const spoken = plain(history.filter((message) => message.role === "user").map((message) => message.content).join(" "));
+  const dayNamed = /\b(today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|week|month|due|by the|\d{1,2}(st|nd|rd|th)|january|february|march|april|may|june|july|august|september|october|november|december)\b/.test(spoken);
+  const grounded = (value) => {
+    if (typeof value === "string") {
+      if (/^\d{4}-\d{2}-\d{2}/.test(value)) return dayNamed;
+      return value.trim().length < 3 || plain(value).split(" ").every((word) => spoken.includes(word));
+    }
+    if (Array.isArray(value)) return value.length > 0 && value.every(grounded);
+    return true; // numbers and switches are left alone
+  };
+  const left = [];
+  for (const key of Object.keys(args ?? {})) {
+    if (required.has(key) || grounded(args[key])) continue;
+    delete args[key];
+    left.push(key);
+  }
+  return left;
+}
+
 async function mcpTool(name, args) {
   const [server, tool] = name.split(/__(.*)/s);
   const client = mcpClients.get(server);
   if (!client || !mcpTools.some((entry) => entry.function.name === name)) return `Unknown tool: ${name}`;
   if (changes.has(name)) {
+    const left = pare(name, args);
+    const omitted = left.length ? ` (Left out, because the user did not ask for them: ${left.join(", ")}. Do not add what was not asked for.)` : "";
+    // The user has just said yes to a question about this very thing: every
+    // particular now given was in the question, so it goes ahead on that yes.
+    if (agreedTo && particulars(args).length && particulars(args).every((value) => plain(agreedTo).includes(plain(value)))) {
+      agreedTo = "";
+      acted = true;
+      emit({ type: "confirm", name, args });
+      emit({ type: "confirm", name, done: true });
+      let result;
+      try { result = (await client.call(tool, args)).slice(0, 4000); } catch (error) { result = `It failed: ${error.message}`; }
+      toolLog.push({ t: Date.now(), name, args, result: result.slice(0, 400) });
+      return `Carried out just now, on the user's yes. ${result}${omitted}`;
+    }
     proposals.push({ name, args });
     acted = true;
     emit({ type: "confirm", name, args });
-    return "This changes something, so it has NOT been done yet. Tell the user exactly what you are about to do, with the details that matter, "
+    return omitted + " This changes something, so it has NOT been done yet. Tell the user exactly what you are about to do, with the details that matter, "
       + "and ask them to say yes. It will be carried out for you when they do. Do not say it is done.";
   }
   // A weekday name that reaches a tool all the same is made a date on the way.
@@ -1284,17 +1615,24 @@ const transcript = new Transcript({
 let history = []; // user, assistant and tool messages, without the system prompt
 let began = 0; // when the conversation in progress started
 let unfiled = 0; // exchanges since memory was last brought up to date
+let lastFiled = 0; // the exchange most recently filed, for "that was wrong"
 let recalled = []; // earlier exchanges shown to the model this turn
+let remembered = []; // and earlier threads
 let seen = ""; // what was looked at for this turn, before the model was asked
 let fresh = false; // this turn's answer drew on something live: a tool, the Oracle, a look
 const lookups = new WeakSet(); // the user messages of turns answered from something live
+const exchangeOf = new WeakMap(); // a user message in the conversation -> the exchange it was filed as
 
 seedTopics();
 transcript.reindex();
+// Not at once: the first thing said after a start should not have to wait behind this.
+setTimeout(() => backfillThreads().catch((error) => console.error(`threads: ${error.message}`)), 30_000).unref();
 
 // A conversation interrupted by a restart carries on where it left off.
 for (const item of transcript.since(Date.now() - cfg.idleResetMinutes * 60_000)) {
+  if (item.hidden) continue;
   const restored = { role: "user", content: item.user };
+  exchangeOf.set(restored, item.t);
   if (item.live) lookups.add(restored);
   history.push(restored, { role: "assistant", content: item.morgan });
   began ||= item.t;
@@ -1313,12 +1651,112 @@ async function searchTool(args) {
     limit: 8,
   });
   emit({ type: "recall", topic: args.query ?? `${args.from ?? ""} to ${args.to ?? ""}` });
-  return hits.length ? hits.map((hit) => describe(hit, 700)).join("\n") : "Nothing was found.";
+  const about = args.query ? (await transcript.searchThreads({ query: String(args.query), to: began || Infinity, limit: 3, live: true })).filter((hit) => hit.score >= 0.45) : [];
+  const found = [...about.map((hit) => describeThread(hit, 500)), ...hits.map((hit) => describe(hit, 700))];
+  return found.length ? found.join("\n") : "Nothing was found.";
+}
+
+// Thumbs down: the exchange stays on the record and is kept from the model
+// for good. It comes out of the conversation in hand, so that a wrong answer
+// is not built on; it is no longer found by search; and any thread it was
+// part of is made again without it. Thumbs up marks an answer as one to
+// prefer; a third press clears either.
+function rate(t, vote) {
+  const outcome = transcript.rate(t, vote);
+  if (!outcome) return false;
+  if (vote === "down") {
+    const at = history.findIndex((message) => exchangeOf.get(message) === t);
+    if (at >= 0) {
+      let end = at + 1;
+      while (end < history.length && history[end].role !== "user") end++;
+      history.splice(at, end - at);
+    }
+    for (const rest of outcome.stale) if (rest.length) fileThreads(rest);
+  }
+  emit({ type: "rated", t, vote });
+  // Notes that may have been taken from it are not deleted: they are put to the user.
+  if (vote === "down") emit({ type: "review", t, notes: notesFrom(t) });
+  return true;
+}
+
+// Said aloud or typed, at the start of a turn: the last answer is struck, as
+// by a thumbs down, and anything said after it is the turn.
+const STRIKE = /^(no[,.]?\s+)?(that(['’]s| is| was) (wrong|incorrect|not right|not true|not correct)|scratch that|strike that|forget (that|what you (just )?said))\b[.!,;:]?\s*/i;
+
+// When a conversation is over it is cut into threads: the exchanges that were
+// about one thing, wherever in the conversation they fell, with a title and
+// a summary. A conversation is not a thread. One that was never cleared may
+// run from a recipe to a meeting to a timer and back, and what is wanted
+// later is the part about the recipe.
+async function fileThreads(items) {
+  if (!items.length) return;
+  const numbered = items.map((item, index) => `${index + 1}. User: ${item.user.replace(/\s+/g, " ").slice(0, 500)}\n   ${cfg.name}: ${item.morgan.replace(/\s+/g, " ").slice(0, 400)}`).join("\n");
+  let threads = null;
+  try {
+    const response = await fetch(`${cfg.ollama.url}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(180_000),
+      body: JSON.stringify({
+        model: cfg.ollama.model, stream: false, think: false, keep_alive: cfg.ollama.keepAlive,
+        format: {
+          type: "object",
+          properties: {
+            threads: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: { title: { type: "string" }, summary: { type: "string" }, exchanges: { type: "array", items: { type: "integer" } } },
+                required: ["title", "summary", "exchanges"],
+              },
+            },
+          },
+          required: ["threads"],
+        },
+        messages: [{
+          role: "system",
+          content: `These are the numbered exchanges of one conversation between ${cfg.userName ?? "a user"} and ${cfg.name}, an assistant. `
+            + "The conversation may wander over several subjects and come back to one. Sort the exchanges into threads: each thread is the "
+            + "exchanges about one subject, whether or not they were next to each other. Every exchange goes in exactly one thread; a "
+            + "subject touched once is a thread of one. For each thread give a title of a few words, and a summary of one to three "
+            + `sentences saying what ${cfg.userName ?? "the user"} asked or said and what was decided, learned or left open, with the names, `
+            + "numbers and dates that matter. Say only what the exchanges say.",
+        }, { role: "user", content: numbered }],
+      }),
+    });
+    threads = JSON.parse((await response.json()).message.content).threads;
+  } catch (error) {
+    console.error(`threads: ${error.message}`);
+  }
+  // Each exchange once, and none left out; failing that, the conversation is kept as one thread.
+  const seen = new Set();
+  const sound = Array.isArray(threads) && threads.length > 0 && threads.every((thread) => Array.isArray(thread.exchanges)
+    && thread.exchanges.every((number) => Number.isInteger(number) && number >= 1 && number <= items.length && !seen.has(number) && seen.add(number)));
+  if (!sound) threads = [{ title: items[0].user.replace(/\s+/g, " ").slice(0, 60), summary: items.map((item) => item.user.replace(/\s+/g, " ")).join(" / ").slice(0, 400), exchanges: items.map((_, index) => index + 1) }];
+  const left = items.map((_, index) => index + 1).filter((number) => !seen.has(number));
+  if (sound && left.length) threads.push({ title: "Other remarks", summary: left.map((number) => items[number - 1].user.replace(/\s+/g, " ")).join(" / ").slice(0, 400), exchanges: left });
+  for (const thread of threads) {
+    const members = thread.exchanges.map((number) => items[number - 1]).sort((a, b) => a.t - b.t);
+    if (members.length) await transcript.addThread({ title: String(thread.title).trim(), summary: String(thread.summary).trim(), items: members });
+  }
+}
+
+// Conversations from before threads were kept, or cut short by a restart:
+// taken a conversation at a time, a conversation ending where nothing was said
+// for as long as it takes one to lapse.
+async function backfillThreads() {
+  const loose = transcript.unthreaded().filter((item) => !began || item.t < began);
+  let group = [];
+  for (const item of loose) {
+    if (group.length && item.t - group.at(-1).t > cfg.idleResetMinutes * 60_000) { await fileThreads(group); group = []; }
+    group.push(item);
+  }
+  if (group.length) await fileThreads(group);
 }
 
 // When a conversation is over, read it back and file what should last. In the
 // moment Morgan saves what it notices; this catches what it did not.
-async function fileAway(turns) {
+async function fileAway(turns, from = []) {
   // Answers that came from a lookup are left out: a day's calendar or a task
   // list is not something to remember, and read back it looks as if it were.
   let lookedUp = false;
@@ -1359,7 +1797,7 @@ async function fileAway(turns) {
       messages.push(reply);
       if (!reply.tool_calls?.length) break;
       for (const call of reply.tool_calls) {
-        messages.push({ role: "tool", tool_name: call.function.name, content: memoryTool(call.function.name, call.function.arguments ?? {}) });
+        messages.push({ role: "tool", tool_name: call.function.name, content: memoryTool(call.function.name, call.function.arguments ?? {}, from) });
       }
     }
   } catch (error) {
@@ -1377,6 +1815,24 @@ async function ask(text, { typed = false, files = [] } = {}) {
   quiet = typed;
   if (typed) spokenTurn = false;
   if (!text && files.length) text = files.length > 1 ? "Here are some files." : "Here is a file.";
+  // "That was wrong": the last answer is struck before anything else happens.
+  let struck = false;
+  let struckAt = 0;
+  if (lastFiled && STRIKE.test(text)) {
+    struckAt = lastFiled;
+    struck = rate(lastFiled, "down");
+    lastFiled = 0;
+    text = text.replace(STRIKE, "").trim();
+    if (struck && !text) {
+      const about = notesFrom(struckAt).length;
+      const line = `Struck. I won't go by that again.${about ? ` ${about === 1 ? "One note in my memory" : `${about} notes in my memory`} may have come from it; ${about === 1 ? "it is" : "they are"} in the chat window for you to look over.` : ""}`;
+      emit({ type: "assistant", text: line });
+      setState("thinking");
+      speakDelta(`${line} `);
+      speakFlush();
+      return finishSpeaking();
+    }
+  }
   if (!text) return setState("idle");
   if (lastActivity && Date.now() - lastActivity > cfg.idleResetMinutes * 60_000) reset();
   const mine = ++turn;
@@ -1402,8 +1858,16 @@ async function ask(text, { typed = false, files = [] } = {}) {
   const told = [];
   const saw = [];
   fresh = false;
+  noted = [];
   try {
-    const hits = await transcript.search({ query: text, to: began, limit: 6 });
+    // Earlier talk is brought back a thread at a time: what it was about and
+    // how it came out, with the exchange or two that bear on this. A single
+    // exchange on its own ("yes, do that") often says nothing.
+    const threads = TIMELY.test(text) ? [] : (await transcript.searchThreads({ query: text, to: began, limit: 2 })).filter((hit) => hit.score >= cfg.threadScore);
+    if (process.env.HEYCLAUDE_DEBUG) console.error("threads", threads.map((hit) => `${hit.score.toFixed(2)} ${hit.thread.title}`));
+    remembered = threads;
+    const inThreads = new Set(threads.flatMap((hit) => hit.thread.ts));
+    const hits = (await transcript.search({ query: text, to: began, limit: 6 })).filter((hit) => !inThreads.has(hit.item.t) && transcript.unthreaded().includes(hit.item));
     if (process.env.HEYCLAUDE_DEBUG) console.error("recall", hits.map((hit) => `${hit.score.toFixed(2)} ${hit.item.live ? "live " : ""}${hit.item.user.slice(0, 40)}`));
     // An old answer that came from a calendar, a task list, the web or the
     // camera is a record of how things stood, not of how they stand. Shown
@@ -1413,16 +1877,74 @@ async function ask(text, { typed = false, files = [] } = {}) {
     if (mine !== turn) return;
     acted = false;
     seen = await settleProposal(text);
+    if (struck) seen += " The user has just said that your last answer was wrong. It has been struck from the record: do not repeat it or rely on it.";
     if (mine !== turn) return;
     // Where the user may be asking for a change, the answer is held back
     // until it is whole, so that a false "done" is never spoken.
-    const guarded = changes.size > 0 && (CHANGE_ASKED.test(text) || YES.test(words(text).join(" ")));
+    // A question about what has been done ("did you create it?") is not a
+    // request to do it, and a true "yes, I created it" is not to be taken for a false one.
+    const asking = /^(did|have|has|had|is|was|are|were|do|does|what|which|when|where|why|how|who)\b/i.test(text.trim());
+    const guarded = changes.size > 0 && !asking && (CHANGE_ASKED.test(text) || YES.test(words(text).join(" ")));
+    let nudges = 0; // times it has been sent back for speaking of a change without calling for it
     // A question about the user's own calendar, tasks or notes cannot be
     // answered without looking them up; an answer given without a tool call
     // is held back and sent round again.
     const lookup = mcpTools.length > 0 && LOOKUP_ASKED.test(text);
+    // A sum is likewise not to be answered without being worked out.
+    const sums = /\d/.test(text) && SUM_ASKED.test(text);
+    // Something recent or current is likewise not to be answered from what the model happens to believe.
+    const current = CURRENT_ASKED.test(text) && !LOOKUP_ASKED.test(text);
+    let worked = false;
+    let credited = false; // the Oracle has been named as the source of what it supplied
     let corrected = false;
     let called = false;
+    try { picked = await pickNotes(text); } catch (error) { picked = ""; console.error(error.message); }
+    if (mine !== turn) return;
+    // A sum is worked out here, before the model answers: asked to call the
+    // calculator itself, it mostly answered from its head instead, and wrongly.
+    if (sums) {
+      const sum = await sumIntent(text);
+      if (mine !== turn) return;
+      if (sum) {
+        try {
+          did("calculate", { expression: sum }, `${sum} = ${calculate(sum)}. Give the user that number; do not work it out again yourself.`);
+          emit({ type: "tool", name: "calculate", args: { expression: sum } });
+          worked = true;
+        } catch { /* not a sum after all, or not one that could be written out */ }
+      }
+    }
+    // Something recent or current, or a request to ask the Oracle, is put to
+    // the Oracle here. Told to consult it, the model as often wrote "the
+    // Oracle says" and made the rest up.
+    let kind = current || ORACLE_ASKED.test(text) ? "current" : null;
+    if (!kind && cfg.router && !lookup && !sums && !guarded && !files.length && words(text).length >= 3) {
+      kind = await kindOf(text);
+      if (mine !== turn) return;
+      emit({ type: "kind", kind });
+    }
+    if (kind === "current" || kind === "world") {
+      setState("consulting");
+      let answer = "";
+      if (kind === "world") {
+        // From what the smaller model knows, which takes a couple of seconds.
+        emit({ type: "consult", question: text, quick: true });
+        answer = await consultOracle(text, true);
+        if (mine !== turn) return;
+      }
+      if (kind === "current" || /^\W*SEARCH\b/i.test(answer) || !answer) {
+        // Looked up, which takes long enough to say so.
+        enqueue(cfg.consultLine);
+        emit({ type: "consult", question: text });
+        answer = await consultOracle(text);
+      }
+      if (mine !== turn) return;
+      emit({ type: "oracle", text: answer });
+      told.push(answer);
+      fresh = true;
+      called = true;
+      did("consult_oracle", { question: text }, `${ORACLE_RELAY}\n\n${answer}`);
+      setState("thinking");
+    }
     // A day the user named is turned into its date here, where it is certain.
     const named = reminders.daysNamed(text);
     if (named.length) seen += ` The user named ${named.length > 1 ? "days" : "a day"}. As dates: ${named.join("; ")}. Use those dates.`;
@@ -1449,46 +1971,118 @@ async function ask(text, { typed = false, files = [] } = {}) {
     for (let round = 0; round < 8; round++) {
       let draft = "";
       let shown = 0;
+      let begun = false; // the opening sentence has been heard out and let through
+      let putOff = false; // it opens by saying it would have to look, instead of looking
+      let creditHere = false;
+      let invented = false; // it credits the Oracle with something the Oracle was never asked
       const reply = await morgan(mine, (delta) => {
-        if (guarded || lookup) return; // held back until it is known to be true
+        if (guarded || lookup || sums || current) return; // held back until it is known to be true
+        draft += delta;
+        if (!begun) {
+          // Nothing is said until the first sentence is in and can be judged.
+          if (!/[.!?…]+\s/.test(draft) && draft.length < 200) return;
+          begun = true;
+          if (PUTS_OFF.test(draft)) { putOff = true; return; }
+          // "The Oracle checked for you", when it was never asked.
+          if (!told.length && !/\boracle\b/i.test(text) && /\boracle\b/i.test(draft)) { putOff = invented = true; return; }
+          // What the Oracle supplied is said to be the Oracle's. The model was
+          // asked to say so and often did not, so it is said for it.
+          if (told.length && !credited && !/\boracle\b/i.test(draft)) { draft = ORACLE_SAYS + draft; credited = creditHere = true; }
+          spoke = true;
+          speakDelta(draft);
+          return;
+        }
+        if (putOff) return;
         spoke = true;
         speakDelta(delta);
         // The answer so far, for the chat window to show as it is written.
-        draft += delta;
         if (Date.now() - shown > 120) { shown = Date.now(); emit({ type: "partial", text: draft }); }
       });
       if (mine !== turn) return;
+      if (creditHere) reply.content = ORACLE_SAYS + reply.content;
+      else if (told.length && !credited && reply.content && !reply.tool_calls?.length && !/\boracle\b/i.test(reply.content)) {
+        reply.content = ORACLE_SAYS + reply.content;
+        credited = true;
+      }
+      if (!guarded && !lookup && !sums && !current && !begun && reply.content) {
+        // Too short to have reached a full stop while it was being written.
+        if (PUTS_OFF.test(reply.content)) putOff = true;
+        else { spoke = true; speakDelta(reply.content); }
+      }
+      if (!invented && !told.length && !reply.tool_calls?.length && !/\boracle\b/i.test(text) && /\boracle\b/i.test(reply.content)) invented = putOff = true;
+      if (invented && !reply.tool_calls?.length) {
+        if (!corrected) {
+          corrected = true;
+          seen += " You have just drafted a reply saying the Oracle told you something. It did not: you have not consulted it in this"
+            + " turn, so what you wrote is made up. Call consult_oracle now with the question, and answer only from what it returns.";
+          continue;
+        }
+        reply.content = "I don't know, and I wasn't able to reach the Oracle to find out.";
+        putOff = false;
+        spoke = true;
+        speakDelta(`${reply.content} `);
+      }
+      // Something current cannot be known without asking: an answer given with no lookup is sent back.
+      if (current && !called && !reply.tool_calls?.length && !corrected) {
+        corrected = true;
+        seen += " You have just drafted an answer about something recent or current (a result, a score, the news, the weather, a"
+          + " latest version) without looking it up. You cannot know it. Call consult_oracle now, and answer from what it returns.";
+        continue;
+      }
+      if (putOff) {
+        if (!reply.tool_calls?.length && !corrected) {
+          // "I'd need to check my memory", and then nothing. It is sent back to check.
+          corrected = true;
+          seen += " You have just drafted a reply saying that you would need to check, look up or recall something. Do not say so:"
+            + " do it now. Call recall for your memory topics, recall_document for a kept document, search_conversations for"
+            + " earlier talk, or the tool that holds what is wanted; then answer from what comes back.";
+          continue;
+        }
+        if (reply.tool_calls?.length) {
+          // "Let me ask the Oracle about that", and it is asking. Nobody needs
+          // to hear the announcement, and strung in front of the answer it made
+          // the answer read as a running commentary.
+          reply.content = "";
+        } else {
+          // Told once already, and still at it: let it be heard.
+          spoke = true;
+          speakDelta(`${reply.content} `);
+        }
+      }
+      if (mine !== turn) return;
       called ||= Boolean(reply.tool_calls?.length);
+      if (sums && !worked && !reply.tool_calls?.length && !corrected) {
+        corrected = true;
+        seen += " You have just drafted an answer to a sum without working it out. Call calculate with the sum written out, and"
+          + " give the user the number it returns.";
+        continue;
+      }
       if (lookup && !called && !corrected) {
         corrected = true;
         seen += " You have just drafted an answer about the user's calendar, tasks or notes without looking anything up, so it"
           + " cannot be right. Call the tool that holds it now, and answer from what comes back.";
         continue;
       }
-      if (guarded && !acted && !reply.tool_calls?.length && CHANGE_CLAIMED.test(reply.content)) {
-        // It says it did something and nothing was done. Once, it is told so
-        // and asked again; after that the user is simply told the truth.
-        if (!corrected) {
-          corrected = true;
-          seen += " You have just drafted a reply saying a change was made. That is false: nothing has been carried out or put"
-            + " forward. Call the tool for it now, or say plainly that it has not been done.";
+      if (guarded && !acted && !reply.tool_calls?.length && (CHANGE_CLAIMED.test(reply.content) || PERMISSION_ASKED.test(reply.content) || CHANGE_SPOKEN_OF.test(reply.content))) {
+        // It says it did, is doing or is about to do something, or asks leave
+        // to, and has called nothing: so nothing was done, and there is
+        // nothing for a yes to act on. Once, it is sent back to call the
+        // tool; after that the user is simply told the truth.
+        if (nudges < 2) {
+          nudges++;
+          seen += " You have just drafted a reply that speaks of making a change (saying it is done, or being done, or asking leave"
+            + " to do it) without calling the tool for it. Nothing has happened. Call the tool now, with exactly what the user"
+            + " asked for; calling it puts the action forward, and the user is then asked for you.";
           continue;
         }
         reply.content = "I haven't actually done that yet. Could you ask me again?";
-      } else if (guarded && !acted && !corrected && !reply.tool_calls?.length && PERMISSION_ASKED.test(reply.content)) {
-        // Asking in words leaves nothing for a yes to act on, and the user
-        // would have to agree twice. It is sent back to call the tool.
-        corrected = true;
-        seen += " You have just drafted a reply asking the user's permission in words. Do not: call the tool for it now. Calling it"
-          + " only puts the action forward, and the user is then asked for you.";
-        continue;
       }
       history.push(reply);
       if (reply.content) {
         said.push(reply.content);
         emit({ type: "assistant", text: reply.content });
         // A held-back answer is spoken now, unless a proposal's question is about to replace it.
-        if ((guarded || lookup) && !reply.tool_calls?.length) speakDelta(`${reply.content} `);
+        if ((guarded || lookup || sums || current) && !reply.tool_calls?.length) speakDelta(`${reply.content} `);
       }
       if (!reply.tool_calls?.length) break;
       speakFlush();
@@ -1512,6 +2106,10 @@ async function ask(text, { typed = false, files = [] } = {}) {
             saw.push(result);
             result = `What you see:\n${result}`;
           }
+        } else if (call.function.name === "calculate") {
+          const sum = String(call.function.arguments?.expression ?? "");
+          try { result = `${sum} = ${calculate(sum)}`; worked = true; } catch (error) { result = `That could not be worked out: ${error.message}. Write the sum with numbers and + - * / ^ % and brackets only.`; }
+          emit({ type: "tool", name: "calculate", args: { expression: sum } });
         } else if (call.function.name === "recall_document") {
           result = recallDocument(call.function.arguments ?? {});
         } else if (["list_folder", "find_files", "read_file"].includes(call.function.name)) {
@@ -1537,7 +2135,7 @@ async function ask(text, { typed = false, files = [] } = {}) {
           emit({ type: "oracle", text: answer });
           told.push(answer);
           fresh = true;
-          result = `The Oracle answered as follows. Relay it briefly, and say that it is what the Oracle told you.\n\n${answer}`;
+          result = `${ORACLE_RELAY}\n\n${answer}`;
           setState("thinking");
         }
         history.push({ role: "tool", tool_name: call.function.name, content: result });
@@ -1562,7 +2160,14 @@ async function ask(text, { typed = false, files = [] } = {}) {
   if (fresh || saw.length || acted) lookups.add(asked);
   if (said.length) {
     unfiled++;
+    const filed = Date.now();
+    exchangeOf.set(asked, filed);
+    lastFiled = filed;
+    sourced(noted, [filed]);
+    // So that whatever is showing the conversation can offer to mark this answer.
+    emit({ type: "filed", t: filed });
     transcript.add({
+      t: filed,
       user: text,
       morgan: said.join(" "),
       ...(saw.length ? { saw: saw.join(" ") } : {}),
@@ -1572,6 +2177,15 @@ async function ask(text, { typed = false, files = [] } = {}) {
   }
   speakFlush();
   finishSpeaking();
+}
+
+// The turn's notes, put after the words of the user's latest message.
+function withNotes(messages) {
+  const last = messages.findLastIndex((message) => message.role === "user");
+  if (last < 0) return messages;
+  const copy = [...messages];
+  copy[last] = { ...copy[last], content: `${copy[last].content}\n\n[Notes from the system for this turn:\n${turnNotes()}\n]` };
+  return copy;
 }
 
 // One streamed chat completion. Text is passed on as it arrives.
@@ -1586,8 +2200,9 @@ async function morgan(mine, onText) {
       stream: true,
       think: cfg.ollama.think,
       keep_alive: cfg.ollama.keepAlive,
-      tools: [...MORGAN_TOOLS, ...sightTools(), ...fileTools(), ...documentTools(), ...mcpTools],
-      messages: [{ role: "system", content: morganPrompt() }, ...history],
+      // With memory in front of it whole there is nothing for recall to fetch.
+      tools: [...MORGAN_TOOLS.filter((tool) => !(memoryInFull() && tool.function.name === "recall")), ...sightTools(), ...fileTools(), ...documentTools(), ...mcpTools],
+      messages: withNotes([{ role: "system", content: morganPrompt() }, ...history]),
     }),
   });
   if (!response.ok) throw new Error(`Ollama answered ${response.status}: ${(await response.text()).slice(0, 200)}`);
@@ -1614,10 +2229,12 @@ async function morgan(mine, onText) {
 }
 
 function reset() {
-  if (unfiled && !interviewing) fileAway(history);
+  if (unfiled && !interviewing) fileAway(history, began ? transcript.since(began).filter((item) => !item.hidden).map((item) => item.t) : []);
+  if (began) fileThreads(transcript.since(began).filter((item) => !item.hidden && !transcript.threads.some((thread) => thread.ts.includes(item.t))));
   unfiled = 0;
   began = 0;
   recalled = [];
+  remembered = [];
   seen = "";
   proposals = [];
   history = [];
@@ -1645,26 +2262,18 @@ function interrupt() {
   stopSpeech();
   abort?.abort();
   abort = null;
-  if (consulting) {
-    const { resolve } = consulting;
-    consulting = null;
-    dropResult = true;
-    oracle?.stdin.write(JSON.stringify({
-      type: "control_request", request_id: randomUUID(), request: { subtype: "interrupt" },
-    }) + "\n");
-    resolve("");
-  }
+  oracles.full.interrupt();
+  oracles.quick.interrupt();
   // A turn cut off before Morgan answered would leave the history ending on a
   // user message or a tool call with no result; drop back to the last answer.
   while (history.length && !(history.at(-1).role === "assistant" && !history.at(-1).tool_calls?.length)) history.pop();
 }
 
 // ---------------------------------------------------------------- the Oracle
-
-let oracle = null;
-let oracleBuffer = "";
-let consulting = null; // { resolve } while a question is out
-let dropResult = false; // an interrupted consultation's answer is discarded
+//
+// Two of them, each a long-lived `claude -p` on the Oracle's own login. The
+// full one has the web and takes its time; the quick one is a smaller model
+// with no tools, for facts that want getting right but not looking up.
 
 function oracleEnv() {
   // The Oracle has its own login. Nothing inherited may point it elsewhere.
@@ -1677,83 +2286,114 @@ function oracleEnv() {
   return env;
 }
 
-function startOracle() {
-  mkdirSync(WORKDIR, { recursive: true });
-  const args = [
-    "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
-    "--model", cfg.oracle.model,
-    "--append-system-prompt", oraclePrompt(),
-    "--tools", cfg.oracle.tools.join(","),
-  ];
-  if (cfg.oracle.allowedTools.length) args.push("--allowedTools", cfg.oracle.allowedTools.join(","));
+function makeOracle({ label, model, tools, allowed, prompt }) {
+  let child = null;
+  let buffer = "";
+  let waiting = null; // { resolve } while a question is out
+  let drop = false; // an interrupted question's answer is discarded
 
-  const child = spawn(cfg.oracle.claude, args, { cwd: WORKDIR, env: oracleEnv(), stdio: ["pipe", "pipe", "pipe"] });
-  oracle = child;
-  oracleBuffer = "";
-  dropResult = false;
-  child.stdout.setEncoding("utf8");
-  child.stdout.on("data", (chunk) => {
-    oracleBuffer += chunk;
-    let newline;
-    while ((newline = oracleBuffer.indexOf("\n")) >= 0) {
-      const line = oracleBuffer.slice(0, newline);
-      oracleBuffer = oracleBuffer.slice(newline + 1);
-      if (!line.trim()) continue;
-      try { onOracleMessage(JSON.parse(line)); } catch { /* not a JSON line */ }
+  const answer = (text) => {
+    const pending = waiting;
+    waiting = null;
+    pending?.resolve(text);
+  };
+
+  function hear(message) {
+    if (message.type === "assistant") {
+      if (drop) return;
+      for (const block of message.message?.content ?? []) {
+        if (block.type === "tool_use") emit({ type: "tool", name: block.name });
+      }
+    } else if (message.type === "result") {
+      if (drop) { drop = false; return; }
+      const text = String(message.result ?? "").trim();
+      answer(message.is_error ? `The Oracle could not answer: ${text}` : text);
     }
-  });
-  child.stderr.setEncoding("utf8");
-  child.stderr.on("data", (text) => console.error("oracle:", text.trimEnd()));
-  child.on("error", (error) => console.error("oracle:", error.message));
-  child.on("exit", (code) => {
-    if (oracle !== child) return;
-    oracle = null;
-    answerConsultation(`The Oracle could not be reached (exit code ${code}).`);
-  });
+  }
+
+  function start() {
+    mkdirSync(WORKDIR, { recursive: true });
+    const args = [
+      "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+      "--model", model(),
+      "--append-system-prompt", prompt(),
+      "--tools", tools().join(","),
+    ];
+    if (allowed().length) args.push("--allowedTools", allowed().join(","));
+    const mine = spawn(cfg.oracle.claude, args, { cwd: WORKDIR, env: oracleEnv(), stdio: ["pipe", "pipe", "pipe"] });
+    child = mine;
+    buffer = "";
+    drop = false;
+    mine.stdout.setEncoding("utf8");
+    mine.stdout.on("data", (chunk) => {
+      buffer += chunk;
+      let newline;
+      while ((newline = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, newline);
+        buffer = buffer.slice(newline + 1);
+        if (!line.trim()) continue;
+        try { hear(JSON.parse(line)); } catch { /* not a JSON line */ }
+      }
+    });
+    mine.stderr.setEncoding("utf8");
+    mine.stderr.on("data", (text) => console.error(`${label}:`, text.trimEnd()));
+    mine.on("error", (error) => console.error(`${label}:`, error.message));
+    mine.on("exit", (code) => {
+      if (child !== mine) return;
+      child = null;
+      answer(`The Oracle could not be reached (exit code ${code}).`);
+    });
+  }
+
+  return {
+    ask(content) {
+      if (!child) start();
+      return new Promise((resolve) => {
+        waiting = { resolve };
+        child.stdin.write(JSON.stringify({ type: "user", message: { role: "user", content } }) + "\n");
+      });
+    },
+    // Give up on the question that is out, and tell the model to stop working on it.
+    interrupt() {
+      if (!waiting) return;
+      const { resolve } = waiting;
+      waiting = null;
+      drop = true;
+      child?.stdin.write(JSON.stringify({ type: "control_request", request_id: randomUUID(), request: { subtype: "interrupt" } }) + "\n");
+      resolve("");
+    },
+    stop() {
+      const mine = child;
+      child = null;
+      mine?.kill("SIGTERM");
+    },
+  };
 }
+
+const oracles = {
+  full: makeOracle({ label: "oracle", model: () => cfg.oracle.model, tools: () => cfg.oracle.tools, allowed: () => cfg.oracle.allowedTools, prompt: () => oraclePrompt() }),
+  quick: makeOracle({ label: "quick oracle", model: () => cfg.oracle.quickModel, tools: () => [], allowed: () => [], prompt: () => quickPrompt() }),
+};
 
 function stopOracle() {
-  const child = oracle;
-  oracle = null;
-  child?.kill("SIGTERM");
+  oracles.full.stop();
+  oracles.quick.stop();
 }
 
-function onOracleMessage(message) {
-  if (message.type === "assistant") {
-    if (dropResult) return;
-    for (const block of message.message?.content ?? []) {
-      if (block.type === "tool_use") emit({ type: "tool", name: block.name });
-    }
-  } else if (message.type === "result") {
-    if (dropResult) { dropResult = false; return; }
-    const text = String(message.result ?? "").trim();
-    answerConsultation(message.is_error ? `The Oracle could not answer: ${text}` : text);
-  }
-}
-
-function answerConsultation(text) {
-  const pending = consulting;
-  consulting = null;
-  pending?.resolve(text);
-}
-
-function consultOracle(question) {
-  if (!oracle) startOracle();
-  // The Oracle gets the conversation so far: Morgan's question alone often
-  // leans on something said earlier.
+// `quick`: the smaller model, from what it knows. It answers SEARCH when the
+// question wants looking up, and the caller then asks the full one.
+function consultOracle(question, quick = false) {
+  // The Oracle gets the conversation so far: the question alone often leans
+  // on something said earlier.
   const recent = history
     .filter((message) => message.role !== "tool" && message.content)
     .slice(-8)
-    .map((message) => `${message.role === "user" ? cfg.userName ?? "User" : cfg.name}: ${message.content}`)
+    .map((message) => `${message.role === "user" ? cfg.userName ?? "User" : cfg.name}: ${message.content.slice(0, 1500)}`)
     .join("\n");
   // The name goes with each question too: the Oracle is started once and kept,
   // and the name may have been set since.
   const whose = cfg.userName ? ` (asked on behalf of ${cfg.userName})` : "";
-  const content = `Recent conversation:\n${recent}\n\n${cfg.name}'s question for you${whose}:\n${question}`;
-  return new Promise((resolve) => {
-    consulting = { resolve };
-    oracle.stdin.write(JSON.stringify({ type: "user", message: { role: "user", content } }) + "\n");
-  });
+  return oracles[quick ? "quick" : "full"].ask(`Recent conversation:\n${recent}\n\n${cfg.name}'s question for you${whose}:\n${question}`);
 }
 
 // ---------------------------------------------------------------- speech out
@@ -1972,12 +2612,24 @@ function startVoices() {
 }
 
 // Is this speech in a voice that has been taught? True when none has.
+//
+// How like the taught voice it has to be depends on how much there is to go
+// on. A full sentence is held to the threshold. A few words score lower for
+// the same speaker, so they are held to less; and a short reply straight
+// after a turn that was accepted is almost certainly the same person
+// answering, so it need only not be plainly someone else. Held to the full
+// threshold, "yes" to "shall I go ahead?" was being ignored.
+let lastAccepted = 0;
+
 function recognised(pcm) {
   if (!voices || !cfg.knownVoicesOnly || !voices.enrolled.length) return true;
   const seconds = pcm.length / 32000;
   const { name, score } = voices.whose(pcm);
-  const ok = score >= cfg.voiceThreshold - (seconds < 1.2 ? 0.15 : 0);
-  voiceLog.push({ t: Date.now(), seconds: Number(seconds.toFixed(1)), name, score: Number(score.toFixed(2)), ok });
+  let need = cfg.voiceThreshold - (seconds < 1.2 ? 0.18 : seconds < 2.5 ? 0.1 : 0);
+  if (Date.now() - lastAccepted < 90_000) need = Math.min(need, 0.18);
+  const ok = score >= need;
+  if (ok) lastAccepted = Date.now();
+  voiceLog.push({ t: Date.now(), seconds: Number(seconds.toFixed(1)), name, score: Number(score.toFixed(2)), need: Number(need.toFixed(2)), ok });
   if (voiceLog.length > 30) voiceLog.shift();
   emit({ type: "voice", name: ok ? name : null, score: Number(score.toFixed(2)) });
   return ok;
@@ -2329,7 +2981,19 @@ function handle(line, socket) {
       return reply({ ok: true, state });
     case "recent": {
       const count = Math.min(Number(rest[0]) || 50, 500);
-      return reply({ ok: true, items: transcript.items.slice(-count).map(({ t, user, morgan }) => ({ t, user, morgan })) });
+      return reply({ ok: true, items: transcript.items.slice(-count).map(({ t, user, morgan, oracle, hidden, good }) => ({ t, user, morgan, ...(oracle ? { oracle } : {}), hidden: Boolean(hidden), good: Boolean(good), ...(hidden ? { review: notesFrom(t) } : {}) })) });
+    }
+    case "settle": {
+      // settle { t, topic, note, action }: the user's verdict on a note that may have come from a hidden answer
+      let verdict;
+      try { verdict = JSON.parse(rest.join(" ")); } catch { return reply({ ok: false, error: "settle wants JSON: { t, topic, note, action }" }); }
+      settleNote(Number(verdict.t), String(verdict.topic), String(verdict.note), verdict.action === "delete" ? "delete" : "keep");
+      return reply({ ok: true });
+    }
+    case "rate": {
+      // rate <exchange> up | down | none
+      const done = rate(Number(rest[0]), String(rest[1] ?? "none"));
+      return reply(done ? { ok: true } : { ok: false, error: "there is no such exchange" });
     }
     case "enroll":
       try { enroll(rest.join(" ").trim()); } catch (error) { return reply({ ok: false, error: error.message }); }
@@ -2348,6 +3012,8 @@ function handle(line, socket) {
     }
     case "tools":
       return reply({ ok: true, calls: toolLog });
+    case "threads":
+      return reply({ ok: true, threads: transcript.threads.map(({ t0, title, summary, ts, live }) => ({ t0, title, summary, exchanges: ts.length, live: Boolean(live) })) });
     case "reminders":
       return reply({ ok: true, reminders: [...due].sort((a, b) => a.at - b.at).map((entry) => ({ ...entry, when: reminders.when(entry.at) })) });
     case "status":

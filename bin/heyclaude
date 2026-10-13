@@ -4,7 +4,7 @@
 // heyclaude toggle | say <text> | type <text> | stop | new | interview | status | watch
 // heyclaude voice [name]                                                     (list voices, or switch to one)
 // heyclaude login | logout | account                                         (the Oracle's Claude login)
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { connect } from "node:net";
 import { join, resolve } from "node:path";
@@ -18,7 +18,8 @@ const ORACLE = { login: ["auth", "login", "--claudeai"], logout: ["auth", "logou
 if (!args.length || ["help", "-h", "--help"].includes(args[0])) {
   console.error([
     "heyclaude settings              menus: Ollama, the Oracle's login, voices, MCP servers, listening",
-    "heyclaude chat                  a typed conversation",
+    "heyclaude window                the conversation as an ordinary application window",
+    "heyclaude chat                  a typed conversation in the terminal",
     "heyclaude toggle                start listening, or send what has been said",
     "heyclaude say|type <text>       a turn answered aloud | in text only",
     "heyclaude stop | new            cut the answer off | start a fresh conversation",
@@ -29,6 +30,7 @@ if (!args.length || ["help", "-h", "--help"].includes(args[0])) {
     "heyclaude attach <file>...      put files on your next message in the chat window",
     "heyclaude reminders             timers and reminders that are set",
     "heyclaude key export | import   write down, or put back, the key that unlocks memory",
+    "heyclaude threads               earlier conversations, as the threads they were cut into",
     "heyclaude tools                 the last few tool calls and what came back",
     "heyclaude admin <json>          what the settings window uses: { op, args }",
   ].join("\n"));
@@ -57,6 +59,13 @@ if (args[0] === "choose" || args[0] === "choose-folder") {
     for (const file of paths) spawnSync(shell, ["msg", "plugin", "jpmoo/morgan:link", "all", "attach", file], { stdio: "ignore" });
     spawnSync(shell, ["msg", "panel-open", "jpmoo/morgan:chat"], { stdio: "ignore" });
   }
+  process.exit(0);
+}
+
+if (args[0] === "window") {
+  // Morgan as an ordinary application window; brought forward if it is already open.
+  const window = new URL("../window/window.py", import.meta.url).pathname;
+  spawn("python3", [window], { stdio: "ignore", detached: true }).unref();
   process.exit(0);
 }
 
@@ -124,7 +133,7 @@ if (args[0] === "voice") {
   args.splice(0, args.length, "speak", "Hello, this is how I sound now.");
 }
 
-const SOCKET = join(process.env.XDG_RUNTIME_DIR ?? "/tmp", "heyclaude.sock");
+const SOCKET = process.env.HEYCLAUDE_SOCKET ?? join(process.env.XDG_RUNTIME_DIR ?? "/tmp", "heyclaude.sock");
 
 function open(command) {
   const socket = connect(SOCKET);

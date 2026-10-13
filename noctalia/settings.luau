@@ -546,7 +546,7 @@ local function voiceTab()
   local checks = {}
   for index, check in ipairs(heard.checks or {}) do
     if index > #heard.checks - 8 then
-      table.insert(checks, hint(`{os.date("%H:%M:%S", math.floor(check.t / 1000))}   {check.seconds}s   score {check.score}   {if check.ok then "accepted as " .. tostring(check.name) else "ignored"}`))
+      table.insert(checks, hint(`{os.date("%H:%M:%S", math.floor(check.t / 1000))}   {check.seconds}s   score {check.score} (needed {check.need or "?"})   {if check.ok then "accepted as " .. tostring(check.name) else "ignored"}`))
     end
   end
   if #checks == 0 then

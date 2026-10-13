@@ -54,25 +54,55 @@ local WORKING = { thinking = true, consulting = true, transcribing = true }
 local phase = 0
 local sinceDraw = 0
 
-local function wave(i: number): number
-  return 0.10 + 0.22 * (1 + math.sin(phase * 2.4 - i * 0.42)) * (0.6 + 0.4 * math.sin(phase * 0.9 + i * 0.13))
-end
-
-local function dots(title: string): string
-  return title .. string.rep(".", 1 + math.floor(phase * 1.6) % 3)
+-- Thinking is shown as a light sweeping back and forth along a bar, as on a
+-- Cylon's visor: a moving waveform reads as sound, and there is none while it
+-- thinks.
+local function scanner(count: number, width: number, height: number, color: string)
+  -- Where the light is, going out and coming back.
+  local travel = (phase * 1.15) % 2
+  local at = 1 + (count - 1) * (if travel < 1 then travel else 2 - travel)
+  local cells = {}
+  for i = 1, count do
+    local near = math.max(0, 1 - math.abs(i - at) / 3.2)
+    table.insert(cells, ui.box({ key = `scan{i}`, width = width, height = height, radius = height / 2, fill = color, opacity = 0.10 + 0.90 * near * near }))
+  end
+  return cells
 end
 
 local opened = 0 -- bumped on each open, to start at the newest message
 local render -- defined below; the buttons need to call it
 
+local unfolded = {} -- by message: whether what the Oracle said is showing
 local selecting = nil -- index of the message opened up for selecting text in
 local copied = nil -- index of the message just copied, for a moment's tick
 
 -- Rendered text cannot be selected, so a message can be copied whole, or
 -- opened as plain text in a field where any part of it can be selected.
-local function tools(index: number, text: string)
-  return {
-    ui.spacer({ flexGrow = 1 }),
+local function tools(index: number, text: string, line)
+  local marks = {}
+  if line and line.t then
+    -- Thumbs down keeps the answer on the record but out of Morgan's sight for
+    -- good; thumbs up marks one to prefer. Pressing the lit one clears it.
+    table.insert(marks, ui.button({
+      glyph = "thumb-up", variant = if line.good then "primary" else "ghost", controlSize = "sm",
+      tooltip = if line.good then "Marked as a good answer. Click to clear." else "A good answer: prefer it when recalling",
+      onClick = function()
+        noctalia.runAsync({ heyclaude, "rate", tostring(line.t), if line.good then "none" else "up" })
+      end,
+    }))
+    table.insert(marks, ui.button({
+      glyph = "thumb-down", variant = if line.hidden then "destructive" else "ghost", controlSize = "sm",
+      tooltip = if line.hidden then "Hidden from Morgan. Click to bring it back." else "A wrong answer: hide it from Morgan from now on",
+      onClick = function()
+        noctalia.runAsync({ heyclaude, "rate", tostring(line.t), if line.hidden then "none" else "down" })
+      end,
+    }))
+  end
+  local out = { ui.spacer({ flexGrow = 1 }) }
+  for _, mark in ipairs(marks) do
+    table.insert(out, mark)
+  end
+  for _, button in ipairs({
     ui.button({
       glyph = if selecting == index then "x" else "cursor-text",
       variant = "ghost",
@@ -94,7 +124,10 @@ local function tools(index: number, text: string)
         render()
       end,
     }),
-  }
+    }) do
+    table.insert(out, button)
+  end
+  return out
 end
 
 -- Attaching is done by the service, which is always running. The file
@@ -109,6 +142,29 @@ end
 -- A file copied in the file manager (Ctrl+C on it) can be attached without the chooser.
 local function attachCopied()
   noctalia.state.set("attach_request", { from = "clipboard", at = noctalia.nowMs() })
+end
+
+-- The notes that may have come from a hidden answer, each with its verdict buttons.
+local function reviewRows(line)
+  local rows = { ui.label({ text = "These notes in memory may have come from this answer. Keep or delete each:", color = "on_surface", fontSize = 11, fontWeight = "bold", maxWidth = WIDTH - 110 }) }
+  for index, entry in ipairs(line.review or {}) do
+    local function settle(action: string)
+      noctalia.runAsync({ heyclaude, "settle", noctalia.json.encode({ t = line.t, topic = entry.topic, note = entry.note, action = action }) })
+    end
+    table.insert(rows, ui.row({ key = `rv{line.t}:{index}`, gap = 6, align = "center" }, {
+      ui.column({ gap = 0, flexGrow = 1 }, {
+        ui.label({ text = entry.note, color = "on_surface", fontSize = 12, maxWidth = WIDTH - 230 }),
+        ui.label({ text = entry.topic, color = "on_surface_variant", fontSize = 10 }),
+      }),
+      ui.button({ text = "Keep", variant = "secondary", controlSize = "sm", onClick = function()
+        settle("keep")
+      end }),
+      ui.button({ text = "Delete", variant = "destructive", controlSize = "sm", onClick = function()
+        settle("delete")
+      end }),
+    }))
+  end
+  return rows
 end
 
 -- Tall enough for the text at about seventy characters to the line.
@@ -149,7 +205,7 @@ render = function()
       table.insert(bars, ui.box({
         key = tostring(i),
         width = 3,
-        height = 3 + math.floor(math.sqrt(if WORKING[state] then wave(i) else levels[i]) * 21),
+        height = 3 + math.floor(math.sqrt(levels[i]) * 21),
         radius = 1,
         fill = look.color,
       }))
@@ -180,6 +236,7 @@ render = function()
         gap = 2,
         padding = 10,
         radius = 10,
+        opacity = if line.hidden and not (line.review and #line.review > 0) then 0.4 else 1,
         fill = if mine then tint(role("primary"), 0.22) elseif oracle then "tertiary/0.18" else "surface",
         border = if mine then tint(role("primary"), 0.5) elseif oracle then "tertiary/0.4" else "outline/0.25",
         borderWidth = 1,
@@ -191,13 +248,36 @@ render = function()
             fontSize = 10,
             fontWeight = "bold",
           }),
-          table.unpack(tools(index, line.text)),
+          table.unpack(tools(index, line.text, if mine then nil else line)),
         }),
         -- What you typed is shown as typed; answers are markdown.
         if selecting == index
           then ui.input({ key = `s{index}`, value = line.text, multiline = true, frameVisible = false, fontSize = 13, height = fieldHeight(line.text) })
           elseif mine then ui.label({ text = line.text, color = "on_surface", fontSize = 13, maxWidth = WIDTH - 66 })
           else ui.markdown({ text = line.text, width = WIDTH - 66 }),
+        -- Hidden, and some of what is in memory may have come from it: each
+        -- such note is put here to be kept or deleted. Nothing goes unasked.
+        ui.column({ visible = line.hidden == true and line.review ~= nil and #line.review > 0, gap = 6, padding = 8, radius = 8, fill = "error/0.10", border = "error/0.35", borderWidth = 1 },
+          reviewRows(line)),
+        -- What the Oracle told Morgan, under the answer it went into: folded
+        -- away until it is asked for.
+        ui.column({ visible = line.oracle ~= nil, gap = 6 }, {
+          ui.row({
+            key = `o{index}`, gap = 6, align = "center", radius = 8, paddingH = 8, paddingV = 4, fill = "tertiary/0.14",
+            tooltip = if unfolded[index] then "Fold away" else "Show what the Oracle said",
+            onClick = function()
+              unfolded[index] = not unfolded[index]
+              render()
+            end,
+          }, {
+            ui.glyph({ name = if unfolded[index] then "chevron-down" else "chevron-right", size = 14, color = "tertiary" }),
+            ui.glyph({ name = "sparkles", size = 14, color = "tertiary" }),
+            ui.label({ text = "What the Oracle said", color = "tertiary", fontSize = 11, fontWeight = "bold" }),
+          }),
+          ui.column({ visible = unfolded[index] == true, padding = 10, radius = 8, fill = "tertiary/0.10", border = "tertiary/0.35", borderWidth = 1 }, {
+            ui.markdown({ text = line.oracle or "", width = WIDTH - 96 }),
+          }),
+        }),
       }))
     end
   end
@@ -229,9 +309,19 @@ render = function()
 
   local header = ui.row({ gap = 10, align = "center", fill = tint(look.color, 0.14), radius = 12, paddingH = 12, paddingV = 6 }, {
     ui.glyph({ name = look.glyph, size = 20, color = look.color }),
-    ui.label({ text = if look.title == "" then who() elseif WORKING[state] then dots(look.title) else look.title, color = "on_surface", fontSize = 13, fontWeight = "bold" }),
-    ui.row({ gap = 2, align = "center", minHeight = 24 }, bars),
+    ui.label({ text = if look.title == "" then who() else look.title, color = "on_surface", fontSize = 13, fontWeight = "bold" }),
+    ui.row({ gap = 2, align = "center", minHeight = 24 }, if WORKING[state] then scanner(12, 6, 5, look.color) else bars),
     ui.spacer({ flexGrow = 1 }),
+    ui.button({
+      glyph = "external-link",
+      variant = "ghost",
+      controlSize = "sm",
+      tooltip = "Open as a window of its own, to tile or keep on a workspace",
+      onClick = function()
+        noctalia.runAsync({ heyclaude, "window" })
+        panel.close()
+      end,
+    }),
     ui.button({
       glyph = "settings",
       variant = "ghost",
@@ -314,7 +404,7 @@ function onFrameTick(deltaMs)
   end
   phase += deltaMs / 1000
   sinceDraw += deltaMs
-  if sinceDraw >= 110 then
+  if sinceDraw >= 60 then
     sinceDraw = 0
     render()
   end

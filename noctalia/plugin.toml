@@ -40,7 +40,10 @@ entry = "widget.luau"
 id = "voice"
 entry = "voice.luau"
 width = 420
-height = 236
+# What is drawn, plus the 16 px the shell keeps clear on every side:
+# 32 + padding 16 + header 40 + waveform 44 + two gaps of 8, and the rest
+# (about 200) for the words. Keep PANEL in voice.luau in step with it.
+height = 356
 # Not persistent: a persistent panel is always floating, whatever placement
 # is chosen for it. The price is that it shares the one slot ordinary panels
 # have, so the service does not raise it over Morgan's own windows.

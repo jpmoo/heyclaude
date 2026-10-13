@@ -794,7 +794,7 @@ async function voicesMenu() {
     } else if (choice === "recent") {
       const checks = daemon("voices").checks ?? [];
       if (!checks.length) console.log("None yet. Each time it hears speech it could act on, the score appears here.");
-      for (const check of checks) console.log(`  ${new Date(check.t).toLocaleTimeString()}  ${String(check.seconds).padStart(4)}s  ${check.score.toFixed(2)}  ${check.ok ? `accepted as ${check.name}` : "ignored"}`);
+      for (const check of checks) console.log(`  ${new Date(check.t).toLocaleTimeString()}  ${String(check.seconds).padStart(4)}s  ${check.score.toFixed(2)} (needed ${check.need ?? "?"})  ${check.ok ? `accepted as ${check.name}` : "ignored"}`);
     } else if (await yes(`Forget ${choice.slice(5)}'s voice?`)) {
       daemon("forget-voice", choice.slice(5));
     }

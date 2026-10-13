@@ -15,6 +15,8 @@ local log = {}
 local open = false
 local idleSince = 0
 
+local heldOracle = nil -- what the Oracle said, waiting for the answer it belongs under
+
 local function say(who: string, text: string)
   table.insert(log, { who = who, text = text })
   while #log > LOG do
@@ -35,7 +37,7 @@ end
 -- An icon and a plain title for a tool, from its name: "HermesNotes__calendar_events"
 -- becomes a calendar and "Calendar events · HermesNotes".
 local ICONS = {
-  { "calendar", "calendar" }, { "event", "calendar" }, { "task", "checklist" }, { "todo", "checklist" },
+  { "calculate", "calculator" }, { "calendar", "calendar" }, { "event", "calendar" }, { "task", "checklist" }, { "todo", "checklist" },
   { "search", "search" }, { "find", "search" }, { "mail", "mail" }, { "message", "message" }, { "note", "notes" },
   { "block", "notes" }, { "project", "folders" }, { "tag", "tag" }, { "list_folder", "folder" }, { "folder", "folder" },
   { "file", "file-text" }, { "read", "file-text" }, { "collection", "stack-2" }, { "canvas", "layout-board" },
@@ -112,6 +114,9 @@ local function onLine(line: string)
       noctalia.state.set("partial", "")
     else
       if event.state == "listening" then
+        -- A new turn: the last one's words are not left up while the next is being said.
+        noctalia.state.set("asked", "")
+        noctalia.state.set("answer", "")
         noctalia.state.set("caption", "")
         clearLevels()
       end
@@ -125,6 +130,31 @@ local function onLine(line: string)
       noctalia.notify(who(), tostring(event.text or "Reminder"))
       act("bell-ringing", "Reminder", tostring(event.text or ""))
     end
+  elseif event.type == "filed" then
+    -- The answer just given now has a place on the record, so it can be marked.
+    for index = #log, 1, -1 do
+      if log[index].who == "morgan" then
+        log[index].t = event.t
+        break
+      end
+    end
+    noctalia.state.set("log", log)
+  elseif event.type == "review" then
+    -- Notes that may have come from an answer the user has hidden, to keep or delete.
+    for _, line in ipairs(log) do
+      if line.t == event.t then
+        line.review = event.notes
+      end
+    end
+    noctalia.state.set("log", log)
+  elseif event.type == "rated" then
+    for _, line in ipairs(log) do
+      if line.t == event.t then
+        line.hidden = event.vote == "down"
+        line.good = event.vote == "up"
+      end
+    end
+    noctalia.state.set("log", log)
   elseif event.type == "enroll" then
     -- Teaching a voice: the settings window ticks the sentences off as they are heard.
     if event.cancelled then
@@ -155,6 +185,11 @@ local function onLine(line: string)
   elseif event.type == "assistant" then
     noctalia.state.set("partial", "")
     say("morgan", event.text)
+    if heldOracle then
+      log[#log].oracle = heldOracle
+      heldOracle = nil
+      noctalia.state.set("log", log)
+    end
   elseif event.type == "sentence" then
     local sofar = noctalia.state.get("answer") or ""
     noctalia.state.set("answer", if sofar == "" then event.text else `{sofar} {event.text}`)
@@ -166,7 +201,8 @@ local function onLine(line: string)
     noctalia.state.set("caption", event.question)
     act("sparkles", "Asked the Oracle", event.question)
   elseif event.type == "oracle" then
-    say("oracle", event.text)
+    -- Kept to go under the answer it was for, folded away, rather than shown ahead of it.
+    heldOracle = if heldOracle then `{heldOracle}\n\n{event.text}` else event.text
   elseif event.type == "tool" then
     local glyph, title = describeTool(event.name)
     act(glyph, title, details(event.args))
@@ -210,7 +246,7 @@ noctalia.runAsync({ heyclaude, "recent", "40" }, function(result)
   local earlier = {}
   for _, item in ipairs(reply.items) do
     table.insert(earlier, { who = "you", text = item.user })
-    table.insert(earlier, { who = "morgan", text = item.morgan })
+    table.insert(earlier, { who = "morgan", text = item.morgan, t = item.t, hidden = item.hidden, good = item.good, review = item.review, oracle = item.oracle })
   end
   for _, line in ipairs(log) do
     table.insert(earlier, line)

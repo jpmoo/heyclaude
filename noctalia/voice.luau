@@ -38,7 +38,7 @@ local LOOK = {
 }
 
 local MAX = 44 -- tallest bar, px
-local WORDS = 104 -- height of the area the words are shown in
+local PANEL = 356 -- the popup's height, as plugin.toml declares it
 
 -- While Morgan is working something out there is no voice to draw, so the
 -- bars run as a slow wave instead and the title counts its dots.
@@ -46,12 +46,19 @@ local WORKING = { thinking = true, consulting = true, transcribing = true }
 local phase = 0
 local sinceDraw = 0
 
-local function wave(i: number): number
-  return 0.10 + 0.22 * (1 + math.sin(phase * 2.4 - i * 0.42)) * (0.6 + 0.4 * math.sin(phase * 0.9 + i * 0.13))
-end
-
-local function dots(title: string): string
-  return title .. string.rep(".", 1 + math.floor(phase * 1.6) % 3)
+-- Thinking is shown as a light sweeping back and forth along a bar, as on a
+-- Cylon's visor: a moving waveform reads as sound, and there is none while it
+-- thinks.
+local function scanner(count: number, width: number, height: number, color: string)
+  -- Where the light is, going out and coming back.
+  local travel = (phase * 1.15) % 2
+  local at = 1 + (count - 1) * (if travel < 1 then travel else 2 - travel)
+  local cells = {}
+  for i = 1, count do
+    local near = math.max(0, 1 - math.abs(i - at) / 3.2)
+    table.insert(cells, ui.box({ key = `scan{i}`, width = width, height = height, radius = height / 2, fill = color, opacity = 0.10 + 0.90 * near * near }))
+  end
+  return cells
 end
 
 local shell = noctalia.expandPath("~/.local/bin/noctalia")
@@ -74,10 +81,7 @@ local function render()
 
   local working = WORKING[noctalia.state.get("state") or "idle"] == true
   local bars = {}
-  for i, level in ipairs(noctalia.state.get("levels") or {}) do
-    if working then
-      level = wave(i)
-    end
+  for i, level in ipairs(if working then {} else (noctalia.state.get("levels") or {})) do
     table.insert(bars, ui.box({
       key = tostring(i),
       width = 4,
@@ -87,10 +91,10 @@ local function render()
     }))
   end
 
-  panel.render(ui.column({ padding = 8, gap = 8, fill = FRAME, radius = 12 }, {
+  panel.render(ui.column({ padding = 8, gap = 8, fill = FRAME, radius = 12, height = PANEL - 2 * 16 }, {
     ui.column({ fill = "surface", radius = 10 }, { ui.row({ gap = 8, align = "center", fill = tint(look.color, 0.16), radius = 10, paddingH = 10, paddingV = 4 }, {
       ui.glyph({ name = look.glyph, size = 18, color = look.color }),
-      ui.label({ text = if look.title == "" then who() elseif working then dots(look.title) else look.title, color = look.color, fontSize = 12, fontWeight = "bold" }),
+      ui.label({ text = if look.title == "" then who() else look.title, color = look.color, fontSize = 12, fontWeight = "bold" }),
       ui.spacer({ flexGrow = 1 }),
       ui.button({
         glyph = "keyboard",
@@ -102,10 +106,10 @@ local function render()
         end,
       }),
     }) }),
-    ui.row({ gap = 3, align = "center", justify = "center", minHeight = MAX, fill = "surface", radius = 10 }, bars),
+    ui.row({ gap = 3, align = "center", justify = "center", minHeight = MAX, fill = "surface", radius = 10 }, if working then scanner(26, 9, 7, look.color) else bars),
     -- The turn so far, to read along with or scroll back through: the wheel
     -- works here although the popup never takes the keyboard.
-    ui.scroll({ fill = "surface_variant", radius = 10, padding = 10, gap = 6, height = WORDS, stickToBottom = true }, words),
+    ui.scroll({ fill = "surface_variant", radius = 10, padding = 10, gap = 6, flexGrow = 1, stickToBottom = true }, words),
   }))
 end
 
@@ -122,7 +126,7 @@ function onFrameTick(deltaMs)
   end
   phase += deltaMs / 1000
   sinceDraw += deltaMs
-  if sinceDraw >= 60 then
+  if sinceDraw >= 40 then
     sinceDraw = 0
     render()
   end

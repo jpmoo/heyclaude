@@ -1,0 +1,369 @@
+<!doctype html>
+<!--
+  The conversation, as a page inside Morgan's application window (window.py).
+  It keeps nothing: what is shown is what the daemon has said, heard through
+  the bridge, and everything typed here is a command to the daemon.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Morgan</title>
+<style>
+  :root {
+    --accent: #6f9bb3;
+    --bg: #131416; --panel: #1b1d20; --raised: #24272b; --line: #33373c;
+    --text: #e6e8ea; --dim: #9aa1a8; --oracle: #b79a6a;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { display: flex; flex-direction: column; background: var(--bg); color: var(--text);
+         font: 14px/1.5 system-ui, "Noto Sans", sans-serif; }
+  button { font: inherit; color: var(--text); background: none; border: 0; border-radius: 8px; padding: 6px 9px; cursor: pointer; }
+  button:hover { background: var(--raised); }
+  /* The shell's icon font, so that this window and the panel in the bar use the same icons. */
+  .ti { font-family: "morgan-icons"; font-size: 17px; line-height: 1; font-style: normal; font-weight: normal; display: inline-block; }
+  header .ti { font-size: 19px; } #stateicon { color: var(--accent); }
+
+  header { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--line);
+           background: color-mix(in srgb, var(--accent) 12%, var(--panel)); }
+  header .name { font-weight: 650; }
+  header .state { color: var(--dim); font-size: 12.5px; min-width: 11em; }
+  header .spacer { flex: 1; }
+
+  /* Sound is a waveform; thinking is a light going back and forth. */
+  #meter { display: flex; align-items: center; gap: 2px; height: 24px; width: 150px; }
+  #meter i { display: block; width: 3px; min-height: 3px; border-radius: 2px; background: var(--accent); }
+  #meter.scan i { width: 8px; height: 5px; border-radius: 3px; opacity: .1; }
+
+  main { flex: 1; overflow-y: auto; padding: 16px 0; }
+  .column { max-width: 860px; margin: 0 auto; padding: 0 16px; display: flex; flex-direction: column; gap: 10px; }
+  .msg { border: 1px solid var(--line); border-radius: 12px; padding: 9px 13px; background: var(--panel); }
+  .msg.you { background: color-mix(in srgb, var(--accent) 16%, var(--panel)); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); white-space: pre-wrap; }
+  .msg.writing { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
+  .who { font-size: 11px; font-weight: 650; color: var(--dim); display: flex; }
+  .msg.you .who { color: var(--accent); }
+  .who button { padding: 1px 5px; color: var(--dim); } .who button .ti { font-size: 15px; }
+  details.oracle summary .ti { font-size: 14px; vertical-align: -2px; margin-right: 4px; }
+  .who button:first-of-type { margin-left: auto; }
+  .msg.hidden > .body, .msg.hidden > details { opacity: .4; }
+  .review { margin-top: 8px; padding: 8px 10px; border-radius: 8px; border: 1px solid #a3564e; background: #a3564e1f; font-size: 12.5px; display: flex; flex-direction: column; gap: 6px; }
+  .review .row { display: flex; gap: 8px; align-items: center; } .review .words { flex: 1; display: flex; flex-direction: column; } .review small { color: var(--dim); }
+  .review button { border: 1px solid var(--line); padding: 2px 10px; } .review button.drop { border-color: #a3564e; color: #e2a39c; } .msg.hidden .mark.down, .msg.good .mark.up { background: var(--raised); color: var(--accent); }
+  .msg.hidden .who::after { content: "hidden from Morgan"; margin-left: 8px; font-weight: 400; font-style: italic; }
+  .body > :first-child { margin-top: 2px; } .body > :last-child { margin-bottom: 2px; }
+  .body p { margin: .45em 0; } .body ul, .body ol { margin: .45em 0; padding-left: 1.4em; }
+  .body pre { background: #0c0d0e; border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; overflow-x: auto; }
+  .body code { font: 12.5px ui-monospace, "JetBrains Mono", monospace; background: #0c0d0e; border-radius: 4px; padding: 1px 4px; }
+  .body pre code { padding: 0; background: none; }
+  .body a { color: var(--accent); }
+  .body table { border-collapse: collapse; } .body th, .body td { border: 1px solid var(--line); padding: 3px 8px; }
+  .body blockquote { margin: .45em 0; padding-left: .8em; border-left: 3px solid var(--line); color: var(--dim); }
+
+  /* What the Oracle told Morgan: under the answer, folded away. */
+  details.oracle { margin-top: 8px; border-radius: 8px; background: color-mix(in srgb, var(--oracle) 10%, transparent); }
+  details.oracle summary { cursor: pointer; padding: 4px 9px; font-size: 12px; font-weight: 650; color: var(--oracle); list-style-position: inside; }
+  details.oracle .body { padding: 2px 11px 8px; }
+
+  .act { display: flex; gap: 10px; align-items: center; padding: 5px 10px; border-radius: 10px; font-size: 12.5px;
+         border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line)); background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }
+  .act .icon { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; color: var(--accent); background: color-mix(in srgb, var(--accent) 22%, transparent); }
+  .act .icon .ti { font-size: 15px; }
+  .act b { font-weight: 650; } .act span { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .act .words { min-width: 0; display: flex; flex-direction: column; }
+
+  footer { border-top: 1px solid var(--line); background: var(--panel); padding: 10px 0 12px; }
+  #chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+  #chips button { border: 1px solid var(--line); font-size: 12px; padding: 2px 8px; }
+  .composer { display: flex; gap: 8px; align-items: flex-end; background: var(--raised); border-radius: 14px; padding: 6px 8px; }
+  textarea { flex: 1; resize: none; border: 0; outline: 0; background: none; color: var(--text); font: inherit; max-height: 220px; padding: 6px 4px; }
+  #mic.on { background: var(--accent); color: #0c0d0e; }
+  body.dropping main { outline: 2px dashed var(--accent); outline-offset: -8px; }
+</style>
+</head>
+<body>
+<header>
+  <i class="ti" id="stateicon"></i>
+  <span class="name" id="name">Morgan</span>
+  <div id="meter"></div>
+  <span class="state" id="state"></span>
+  <span class="spacer"></span>
+  <button id="settings" title="Settings: memory, voice, listening, files, connections"><i class="ti" data-icon="settings"></i></button>
+  <button id="new" title="Start a new conversation"><i class="ti" data-icon="plus"></i></button>
+</header>
+<main id="scroll"><div class="column" id="log"></div></main>
+<footer><div class="column" style="gap:0">
+  <div id="chips"></div>
+  <div class="composer">
+    <button id="attach" title="Attach files (or drop them on the window)"><i class="ti" data-icon="paperclip"></i></button>
+    <textarea id="draft" rows="1" placeholder="Type here. Enter sends; Shift+Enter starts a new line." autofocus></textarea>
+    <button id="mic" title="Speak"><i class="ti" id="micicon"></i></button>
+  </div>
+</div></footer>
+
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+<script src="markdown-it.min.js"></script>
+<script>
+"use strict";
+const md = window.markdownit({ html: false, linkify: true, breaks: true });
+const $ = (id) => document.getElementById(id);
+const STATES = { idle: "", listening: "Listening", transcribing: "Listening", thinking: "Thinking", consulting: "Consulting the Oracle", speaking: "Speaking" };
+const WORKING = new Set(["thinking", "consulting", "transcribing"]);
+// The same icons, by the same names, as the panel in the bar (noctalia/service.luau, chat.luau).
+const ICONS = [["calculate", "calculator"], ["calendar", "calendar"], ["event", "calendar"], ["task", "checklist"], ["todo", "checklist"], ["search", "search"], ["find", "search"], ["mail", "mail"], ["message", "message"], ["note", "notes"], ["block", "notes"], ["project", "folders"], ["tag", "tag"], ["list_folder", "folder"], ["folder", "folder"], ["file", "file-text"], ["read", "file-text"], ["collection", "stack-2"], ["canvas", "layout-board"], ["daily", "sun"], ["web", "world"], ["fetch", "world"], ["type", "category"]];
+const STATE_ICONS = { idle: "message-circle", listening: "microphone", transcribing: "ear", thinking: "brain", consulting: "eye", speaking: "volume" };
+let GLYPHS = {};
+function glyph(name) { return GLYPHS[name] ? String.fromCodePoint(parseInt(GLYPHS[name], 16)) : ""; }
+function icon(name) { const node = el("i", "ti"); node.textContent = glyph(name); return node; }
+
+let bridge = null;
+let name = "Morgan";
+let state = "idle";
+let files = [];          // paths attached to the message being written
+let writing = null;      // the bubble an answer is being written into
+let heldOracle = "";     // what the Oracle said, waiting for the answer it goes under
+let mine = false;        // the turn in hand was typed here, so its echo is already shown
+const levels = new Array(40).fill(0);
+
+// ---------------------------------------------------------------- the list
+
+function atBottom() { const s = $("scroll"); return s.scrollHeight - s.scrollTop - s.clientHeight < 80; }
+function add(node) {
+  const follow = atBottom();
+  $("log").append(node);
+  if (follow) $("scroll").scrollTop = $("scroll").scrollHeight;
+  return node;
+}
+function el(tag, cls, text) { const node = document.createElement(tag); if (cls) node.className = cls; if (text !== undefined) node.textContent = text; return node; }
+
+// An answer can be marked once it is on the record (it has a time, `t`).
+// Thumbs down keeps it there but out of Morgan's sight for good; thumbs up
+// marks one to prefer. Pressing the lit one clears it.
+function marks(box, t) {
+  box.dataset.t = t;
+  const head = box.querySelector(".who");
+  head.querySelectorAll(".mark").forEach((old) => old.remove());
+  const up = el("button", "mark up"), down = el("button", "mark down");
+  up.append(icon("thumb-up")); down.append(icon("thumb-down"));
+  up.title = "A good answer: prefer it when recalling";
+  down.title = "A wrong answer: hide it from Morgan from now on";
+  up.onclick = () => bridge.call(`rate ${t} ${box.classList.contains("good") ? "none" : "up"}`);
+  down.onclick = () => bridge.call(`rate ${t} ${box.classList.contains("hidden") ? "none" : "down"}`);
+  head.insertBefore(down, head.querySelector(".copy"));
+  head.insertBefore(up, down);
+}
+
+// Notes that may have come from a hidden answer: each to be kept or deleted, by the user.
+function review(box, t, notes) {
+  box.querySelector(".review")?.remove();
+  if (!notes?.length) return;
+  const card = el("div", "review");
+  card.append(el("b", "", "These notes in memory may have come from this answer. Keep or delete each:"));
+  for (const entry of notes) {
+    const row = el("div", "row");
+    const words = el("div", "words");
+    words.append(el("span", "", entry.note), el("small", "", entry.topic));
+    const keep = el("button", "", "Keep"), drop = el("button", "drop", "Delete");
+    const settle = (action) => bridge.call(`settle ${JSON.stringify({ t, topic: entry.topic, note: entry.note, action })}`);
+    keep.onclick = () => settle("keep");
+    drop.onclick = () => settle("delete");
+    row.append(words, keep, drop);
+    card.append(row);
+  }
+  box.append(card);
+}
+
+function message(who, text, oracle, record) {
+  const box = el("div", `msg ${who}`);
+  const head = el("div", "who", who === "you" ? "You" : name);
+  const copy = el("button", "copy");
+  copy.title = "Copy this message";
+  copy.append(icon("copy"));
+  copy.onclick = () => { navigator.clipboard.writeText(text); copy.replaceChildren(icon("check")); setTimeout(() => copy.replaceChildren(icon("copy")), 1200); };
+  head.append(copy);
+
+  const body = el("div", "body");
+  if (who === "you") body.textContent = text; else body.innerHTML = md.render(text);
+  box.append(head, body);
+  // Only once the heading is in the box: the marks are put into it there.
+  if (record) { marks(box, record.t); box.classList.toggle("hidden", Boolean(record.hidden)); box.classList.toggle("good", Boolean(record.good)); review(box, record.t, record.review); }
+  if (oracle) {
+    const fold = el("details", "oracle");
+    const summary = el("summary");
+    summary.append(icon("sparkles"), "What the Oracle said");
+    fold.append(summary);
+    const said = el("div", "body");
+    said.innerHTML = md.render(oracle);
+    fold.append(said);
+    box.append(fold);
+  }
+  return box;
+}
+
+function act(icon, title, detail) { // icon: its name in the shell's font
+  const row = el("div", "act");
+  const words = el("div", "words");
+  words.append(el("b", "", title));
+  if (detail) words.append(el("span", "", detail));
+  const badge = el("div", "icon");
+  badge.append(window.icon(icon));
+  row.append(badge, words);
+  add(row);
+}
+
+function toolCard(tool, args) {
+  const [server, bare] = tool.includes("__") ? tool.split(/__(.*)/s) : ["", tool];
+  const icon = (ICONS.find(([word]) => bare.toLowerCase().includes(word)) ?? [, "plug"])[1];
+  const title = bare.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase()) + (server ? ` · ${server}` : "");
+  const detail = Object.entries(args ?? {}).map(([key, value]) => `${key} ${typeof value === "object" ? JSON.stringify(value) : value}`).join(", ");
+  return [icon, title, detail];
+}
+
+// ---------------------------------------------------------------- the daemon's news
+
+function hear(line) {
+  let e;
+  try { e = JSON.parse(line); } catch { return; }
+  switch (e.type) {
+    case "state":
+      if (e.name && e.name !== name) { name = e.name; $("name").textContent = name; bridge.title(name); $("draft").placeholder = `Type to ${name}. Enter sends; Shift+Enter starts a new line.`; }
+      state = e.state;
+      $("state").textContent = STATES[state] ?? "";
+      $("mic").classList.toggle("on", state === "listening");
+      $("mic").title = state === "idle" ? "Speak" : state === "listening" ? "Send what you've said" : "Stop";
+      paint();
+      if (state === "idle") { writing?.remove(); writing = null; levels.fill(0); }
+      break;
+    case "level": levels.push(e.value); levels.shift(); break;
+    case "user":
+      if (mine) mine = false; else add(message("you", e.text));
+      break;
+    case "partial":
+      if (!writing) writing = add(message("morgan writing", ""));
+      { const follow = atBottom(); writing.querySelector(".body").innerHTML = md.render(e.text); if (follow) $("scroll").scrollTop = $("scroll").scrollHeight; }
+      break;
+    case "assistant":
+      writing?.remove(); writing = null;
+      add(message("morgan", e.text, heldOracle)); heldOracle = "";
+      break;
+    case "filed": { const answers = document.querySelectorAll("#log .msg.morgan:not(.writing)"); if (answers.length) marks(answers[answers.length - 1], e.t); break; }
+    case "review": for (const box of document.querySelectorAll(`#log .msg[data-t="${e.t}"]`)) review(box, e.t, e.notes); break;
+    case "rated": for (const box of document.querySelectorAll(`#log .msg[data-t="${e.t}"]`)) { box.classList.toggle("hidden", e.vote === "down"); box.classList.toggle("good", e.vote === "up"); } break;
+    case "oracle": heldOracle = heldOracle ? `${heldOracle}\n\n${e.text}` : e.text; break;
+    case "consult": act("sparkles", "Asked the Oracle", e.question); break;
+    case "tool": act(...toolCard(e.name, e.args)); break;
+    case "recall": act("book", "Read from memory", String(e.topic ?? "")); break;
+    case "look": act(e.source === "camera" ? "camera" : e.source === "clipboard" ? "clipboard" : "device-desktop", `Looked at the ${e.source}`, ""); break;
+    case "memory": act(e.rewritten ? "brain" : "bookmark", e.rewritten ? "Tidied memory" : `Remembered in ${e.topic}`, e.rewritten ? String(e.topic ?? "") : String(e.note ?? "")); break;
+    case "confirm": {
+      const [, title, detail] = toolCard(e.name, e.args);
+      if (e.done === undefined) act("hand-stop", `Waiting for your yes: ${title.toLowerCase()}`, detail);
+      else act(e.done ? "circle-check" : "circle-x", `${e.done ? "Done" : "Not done"}: ${title.toLowerCase()}`, "");
+      break;
+    }
+    case "reminder": act(e.set ? "bell" : "bell-ringing", e.set ? (e.text ? `Reminder set: ${e.text}` : "Timer set") : "Reminder", e.set ? String(e.when ?? "") : String(e.text ?? "")); break;
+    case "error": act("alert-triangle", "Something went wrong", e.message); break;
+    case "new": $("log").replaceChildren(); writing = null; heldOracle = ""; break;
+  }
+}
+
+// The icons that depend on what Morgan is doing, and the fixed ones in the page.
+function paint() {
+  $("stateicon").textContent = glyph(STATE_ICONS[state] ?? "message-circle");
+  $("micicon").textContent = glyph(state === "idle" || state === "listening" ? "microphone" : "player-stop");
+  for (const node of document.querySelectorAll("[data-icon]")) node.textContent = glyph(node.dataset.icon);
+}
+
+// ---------------------------------------------------------------- the meter
+
+const meter = $("meter");
+for (let i = 0; i < 40; i++) meter.append(document.createElement("i"));
+function draw(now) {
+  const cells = meter.children;
+  const working = WORKING.has(state);
+  meter.classList.toggle("scan", working);
+  if (working) {
+    const count = 14, travel = (now / 870) % 2, at = (count - 1) * (travel < 1 ? travel : 2 - travel);
+    for (let i = 0; i < cells.length; i++) {
+      cells[i].style.display = i < count ? "" : "none";
+      const near = Math.max(0, 1 - Math.abs(i - at) / 3.2);
+      cells[i].style.height = ""; cells[i].style.opacity = 0.1 + 0.9 * near * near;
+    }
+  } else {
+    for (let i = 0; i < cells.length; i++) {
+      cells[i].style.display = state === "idle" ? "none" : "";
+      cells[i].style.opacity = 1;
+      cells[i].style.height = `${3 + Math.sqrt(levels[i]) * 20}px`;
+    }
+  }
+  requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+
+// ---------------------------------------------------------------- writing to it
+
+function chips() {
+  $("chips").replaceChildren(...files.map((path, index) => {
+    const chip = el("button", "", `${path.split("/").pop()}  ×`);
+    chip.title = `${path} (click to remove)`;
+    chip.onclick = () => { files.splice(index, 1); chips(); };
+    return chip;
+  }));
+}
+
+function send() {
+  const text = $("draft").value.trim();
+  if (!text && !files.length) return;
+  if (["/new", "/interview", "/stop"].includes(text)) bridge.call(text.slice(1));
+  else {
+    mine = true;
+    add(message("you", files.length ? `${text}\n\n${files.map((path) => `📎 ${path.split("/").pop()}`).join("\n")}` : text));
+    $("scroll").scrollTop = $("scroll").scrollHeight;
+    bridge.call(files.length ? `ask ${JSON.stringify({ text, files })}` : `type ${text.replace(/\n+/g, " ")}`);
+  }
+  files = []; chips();
+  $("draft").value = ""; grow();
+}
+
+function grow() { const box = $("draft"); box.style.height = "auto"; box.style.height = `${Math.min(220, box.scrollHeight)}px`; }
+$("draft").addEventListener("input", grow);
+$("draft").addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); send(); }
+  if (event.key === "Escape" && state !== "idle") bridge.call("stop");
+});
+$("attach").onclick = () => bridge.pick((picked) => { files.push(...JSON.parse(picked)); chips(); $("draft").focus(); });
+$("mic").onclick = () => bridge.call(state === "idle" || state === "listening" ? "toggle" : "stop");
+$("new").onclick = () => bridge.call("new");
+$("settings").onclick = () => bridge.settings();
+
+// ---------------------------------------------------------------- starting up
+
+new QWebChannel(qt.webChannelTransport, (channel) => {
+  bridge = channel.objects.bridge;
+  bridge.look((look) => {
+    const { accent, font, glyphs } = JSON.parse(look);
+    if (accent) document.documentElement.style.setProperty("--accent", accent);
+    GLYPHS = glyphs ?? {};
+    new FontFace("morgan-icons", `url("file://${font}")`).load().then((face) => { document.fonts.add(face); }, () => {});
+    paint();
+    start();
+  });
+});
+
+function start() {
+  // The conversation so far, and earlier ones, to scroll back through.
+  bridge.call("recent 60", (answer) => {
+    let earlier = [];
+    try { earlier = JSON.parse(answer).items ?? []; } catch { /* the daemon is not up yet */ }
+    for (const item of earlier) {
+      try { add(message("you", item.user)); add(message("morgan", item.morgan, item.oracle ?? "", item)); } catch (error) { console.error(error); }
+    }
+    $("scroll").scrollTop = $("scroll").scrollHeight;
+    bridge.event.connect(hear);
+    // The stream's opening line, which says who this is and what it is doing, may have gone by already.
+    bridge.call("status", (status) => { try { const now = JSON.parse(status); hear(JSON.stringify({ type: "state", state: now.state, name: now.name })); } catch { /* not up */ } });
+  });
+  bridge.dropped.connect((dropped) => { files.push(...JSON.parse(dropped)); chips(); $("draft").focus(); });
+}
+</script>
+</body>
+</html>
