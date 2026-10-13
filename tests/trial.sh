@@ -19,7 +19,11 @@ real = os.path.expanduser("~/.config/heyclaude/config.json")
 config = json.load(open(real)) if os.path.exists(real) else {}
 config.update({"wakeWord": None, "interruptWord": None, "tts": None, "engine": "piper", "hotkey": None,
                "echoCancel": False, "record": "sleep 100", "followUpSeconds": 0, "folders": [],
-               "mcpServers": {}, "router": sys.argv[1] == "true"})
+               "router": sys.argv[1] == "true"})
+if not os.environ.get("SERVICES"):
+    config["mcpServers"] = {}  # the user's own services are left alone unless asked for
+if os.environ.get("IDLE"):
+    config["idleResetMinutes"] = float(os.environ["IDLE"])
 print(json.dumps(config))
 PY
 rm -f "$HEYCLAUDE_SOCKET"

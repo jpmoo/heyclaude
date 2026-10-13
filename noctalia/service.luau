@@ -120,7 +120,11 @@ local function onLine(line: string)
         noctalia.state.set("caption", "")
         clearLevels()
       end
-      show(true)
+      -- A typed turn is watched where it was typed: the chat panel, the window
+      -- or a terminal. The popup is for what is said aloud.
+      if not event.typed then
+        show(true)
+      end
     end
   elseif event.type == "reminder" then
     if event.set then

@@ -22,6 +22,7 @@ import { Transcript, describe, describeThread } from "./history.mjs";
 import * as wake from "./wake.mjs";
 import { createAdmin } from "./admin.mjs";
 import * as reminders from "./reminders.mjs";
+import { sortTurn } from "./sort.mjs";
 import { calculate } from "./calc.mjs";
 import * as voiceprint from "./speaker.mjs";
 
@@ -1075,7 +1076,7 @@ function emit(event) {
 
 function setState(next) {
   state = next;
-  emit({ type: "state", state });
+  emit({ type: "state", state, typed: quiet }); // a typed turn is followed where it was typed, not in the voice popup
   bindEscape(next !== "idle");
 }
 
@@ -1370,14 +1371,9 @@ const CHANGE_ASKED = /\b(add|create|make|new|delete|remove|archive|unarchive|upd
 const CHANGE_CLAIMED = /\b(i've|i have|i just|i went ahead|has been|have been|is now|are now|it's been|all set|all done|taken care of|successfully)\b[^.?!]*\b(added|created|made|deleted|removed|archived|unarchived|updated|changed|edited|renamed|moved|marked|completed|sent|replied|forwarded|scheduled|rescheduled|cancelled|canceled|set|tagged|assigned|drafted|posted|saved|done)\b|\ball set\b|\bsuccessfully\b/i;
 const CHANGE_SPOKEN_OF = /\b(i['’]?m|i am|i['’]ll|i will|i['’]m about to|i['’]m going to|let me)\b[^.?!]{0,40}\b(creat|add|remov|delet|updat|chang|renam|mov|archiv|mark|schedul|tagg|sett)(e|es|ed|ing)?\b|,\s*(ok|okay|alright|all right|right)\?\s*$/i;
 const PERMISSION_ASKED = /\b(shall i|should i|want me to|would you like me to|do you want me to|like me to|is that (ok|okay|right|correct)|does that (work|sound)|sound (good|right)|go ahead|proceed|confirm)\b[^.!]*\?/i;
-const LOOKUP_ASKED = /\b(my|the) (calendar|schedule|agenda|diary|tasks?|task list|to-?do( list)?s?|meetings?|appointments?|events?|projects?|notes?|inbox)\b|\b(what's|what is|anything|what do i have) (on|due|scheduled|planned|coming up)\b/i;
 const PUTS_OFF = /\b(i(['’]d| would| will|['’]ll)? (need|have) to (check|look|search|recall|consult|review|pull|go through|see|clarify|verify|confirm|find out|ask)|let me (ask|consult|clarify|verify|confirm|find out|get|grab)|i(['’]ll| will) (ask|consult|find out)|i(['’]d| would) (need|have|want) to (first )?(check|look|search|recall|review)|let me (check|look|search|recall|pull|see|review|go through)|i(['’]ll| will| can| could) (check|look (that|it|this|in|at|through|up)|search|recall|pull)|i don['’]t have (that|this|it|any|access)[^.]*\b(memory|notes|record|information)|would you like me to (check|look|search|recall))\b/i;
 const ORACLE_SAYS = "The Oracle says: ";
 const ORACLE_RELAY = "The Oracle answered as follows. Give the user this answer now. Speak to them directly, as you: never of them by name or as he, she or they, even where the Oracle's wording does. Say once, in passing, that it comes from the Oracle, and then give the substance. Do not say what you did or are about to do, do not restate their question, and do not offer alternatives they did not ask about.";
-const ORACLE_ASKED = /\b(ask|consult|check with|run (it|this|that) (by|past)|see what|find out from|look (it|this|that) up with)\b[^.?!]{0,30}\boracle\b|\boracle\b[^.?!]{0,20}\b(say|says|think|thinks|know|knows)\b/i;
-const CURRENT_ASKED = /\b(this (weekend|week|season|month|year)|last (night|week|weekend|game|match|month)|yesterday['’]?s?|tonight['’]?s?|latest|newest|most recent|recently|right now|currently|these days|score[sd]?|standings|who won|did .{2,40} win|how did .{2,60} do\b|news|headlines|weather|forecast|temperature outside|stock price|share price|exchange rate|election|release date|new(est)? version|reviews?|reviewed|reception|received|box office|rotten tomatoes|metacritic|ratings?|came out|coming out|just released|premiered?|new (movie|film|album|book|show|series|season|episode|game|phone|model|release))\b/i;
-const SUM_ASKED = /(\bpercent|%|\btimes\b|\bmultipl|\bdivided?\b|\bplus\b|\bminus\b|\bsum of\b|\badd(ed)? up\b|\btotal\b|\baverage\b|\bsquare root\b|\bsquared\b|\bcubed\b|\bhow much is\b|\bwhat(['’]s| is) \d|[\d)]\s*[+*\/×÷^]\s*[\d(]|\d\s+-\s+\d|\bsplit\b[^.?]*\b(ways|between|among)\b|\btip\b)/i;
-const TIMELY = /\b(today|tonight|tomorrow|yesterday|now|currently|current|latest|newest|recent|this (morning|afternoon|evening|week|weekend|month|year)|next (week|month|year|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|on (monday|tuesday|wednesday|thursday|friday|saturday|sunday)|calendar|schedule|due|overdue|weather|news|price|score)\b/i;
 const YES = /^(yes|yeah|yep|yup|sure|ok|okay|alright|all right|right|correct|absolutely|definitely|please)?( ?(yes|please|do it|do that|go ahead|go for it|go on|confirm|confirmed|thats right|that is right|thats correct|sounds good|thats fine|fine))*( ?(please|thanks|thank you))?$/;
 
 // Called with the user's words at the start of each turn. Returns what the
@@ -1411,44 +1407,6 @@ async function settleProposal(text) {
   }
   acted = true;
   return "What the user agreed to has just been carried out, as the results above show. Do not call those tools again; tell them briefly how it went.";
-}
-
-// What kind of question this is. The model is asked to sort it, which it does
-// well, and not whether it knows the answer, which it does badly.
-async function kindOf(text) {
-  try {
-    const before = history.filter((message) => message.role !== "tool" && message.content).slice(-3, -1)
-      .map((message) => `${message.role === "user" ? "User" : cfg.name}: ${message.content.slice(0, 300)}`).join("\n");
-    const response = await fetch(`${cfg.ollama.url}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal: AbortSignal.timeout(20_000),
-      body: JSON.stringify({
-        model: cfg.ollama.model, stream: false, think: false, keep_alive: cfg.ollama.keepAlive, options: { temperature: 0 },
-        format: { type: "object", properties: { kind: { type: "string", enum: ["yours", "conversation", "settled", "world", "current"] } }, required: ["kind"] },
-        messages: [{
-          role: "system",
-          content: "Sort the user's latest message to a voice assistant into one kind. Do not answer it.\n"
-            + "yours: about the user's own life, people, things, plans, notes, files or earlier conversations; or an instruction to the "
-            + "assistant to remember, set, make, change or do something; or about the assistant itself.\n"
-            + "conversation: small talk, feelings, opinions, jokes, brainstorming, naming things, wording, writing or rewriting, advice "
-            + "on how to go about something where there is no single right answer.\n"
-            + "world: any question of fact about the world that is not about what is happening now: a particular film, book, "
-            + "piece of music, product, company, place or person; a figure, count, measurement or statistic; how something "
-            + "works; anything in science, medicine, law, money or tax. This is the usual kind for a question of fact.\n"
-            + "settled: only a fact a ten-year-old could answer without looking it up, such as the capital of a large country, "
-            + "how many days are in a week, or who wrote a play taught in every school. Nothing about law, medicine, money, "
-            + "technology or a particular modern work is ever settled. If there is any doubt, it is world, not settled.\n"
-            + "current: depends on what is happening now or lately: news, results, scores, reviews, prices, weather, versions, "
-            + "schedules, who holds a post, this year's rates or limits.",
-        }, { role: "user", content: `${before ? `Earlier:\n${before}\n\n` : ""}The message to sort:\n${text}` }],
-      }),
-    });
-    return JSON.parse((await response.json()).message.content).kind;
-  } catch (error) {
-    console.error(`router: ${error.message}`);
-    return null;
-  }
 }
 
 // The sum in what the user said, written out for the calculator; "" if there is none.
@@ -1637,6 +1595,15 @@ for (const item of transcript.since(Date.now() - cfg.idleResetMinutes * 60_000))
   history.push(restored, { role: "assistant", content: item.morgan });
   began ||= item.t;
   unfiled++;
+}
+
+// The most recent conversation, if there was one in the last half day: its
+// last few exchanges, as they were filed.
+function lastConversation() {
+  const earlier = transcript.since(Date.now() - 12 * 3_600_000).filter((item) => !item.hidden);
+  let from = earlier.length - 1;
+  while (from > 0 && earlier.length - from < 6 && earlier[from].t - earlier[from - 1].t < cfg.idleResetMinutes * 60_000) from--;
+  return from >= 0 ? earlier.slice(from) : [];
 }
 
 async function searchTool(args) {
@@ -1843,6 +1810,24 @@ async function ask(text, { typed = false, files = [] } = {}) {
   const names = files.map((file) => basename(file));
   emit({ type: "user", text: names.length ? `${text}\n\n${names.map((name) => `📎 ${name}`).join("\n")}` : text });
   setState("thinking");
+  // What kind of turn this is, decided once and acted on below. A bare yes is
+  // not sorted: it answers whatever was last proposed.
+  const lapsed = history.length ? [] : lastConversation();
+  const sorted = (YES.test(words(text).join(" ")) ? null
+    : await sortTurn({ ...cfg.ollama, name: cfg.name }, text, history.length ? history : lapsed.flatMap((item) => [{ role: "user", content: item.user }, { role: "assistant", content: item.morgan }])))
+    ?? { follows: false, about: null, lookup: false, sum: false, oracle: false };
+  if (mine !== turn) return;
+  emit({ type: "kind", kind: sorted.about, lookup: sorted.lookup, follows: sorted.follows, sum: sorted.sum });
+  // "Try again", said after the conversation has lapsed, means the last thing
+  // talked about; so that conversation is picked back up.
+  if (sorted.follows) {
+    for (const item of lapsed) {
+      const restored = { role: "user", content: item.user };
+      exchangeOf.set(restored, item.t);
+      if (item.live) lookups.add(restored);
+      history.push(restored, { role: "assistant", content: item.morgan });
+    }
+  }
   let attached = "";
   for (const file of files) {
     let content;
@@ -1863,7 +1848,8 @@ async function ask(text, { typed = false, files = [] } = {}) {
     // Earlier talk is brought back a thread at a time: what it was about and
     // how it came out, with the exchange or two that bear on this. A single
     // exchange on its own ("yes, do that") often says nothing.
-    const threads = TIMELY.test(text) ? [] : (await transcript.searchThreads({ query: text, to: began, limit: 2 })).filter((hit) => hit.score >= cfg.threadScore);
+    const timely = sorted.lookup || sorted.about === "current"; // about how things stand now
+    const threads = timely ? [] : (await transcript.searchThreads({ query: text, to: began, limit: 2 })).filter((hit) => hit.score >= cfg.threadScore);
     if (process.env.HEYCLAUDE_DEBUG) console.error("threads", threads.map((hit) => `${hit.score.toFixed(2)} ${hit.thread.title}`));
     remembered = threads;
     const inThreads = new Set(threads.flatMap((hit) => hit.thread.ts));
@@ -1873,7 +1859,7 @@ async function ask(text, { typed = false, files = [] } = {}) {
     // camera is a record of how things stood, not of how they stand. Shown
     // unasked, it gets repeated in place of looking again; so it is not shown,
     // and nothing is when the question is about now.
-    recalled = TIMELY.test(text) ? [] : hits.filter((hit) => hit.score >= cfg.recallScore && !hit.item.live).slice(0, 3);
+    recalled = timely ? [] : hits.filter((hit) => hit.score >= cfg.recallScore && !hit.item.live).slice(0, 3);
     if (mine !== turn) return;
     acted = false;
     seen = await settleProposal(text);
@@ -1889,11 +1875,13 @@ async function ask(text, { typed = false, files = [] } = {}) {
     // A question about the user's own calendar, tasks or notes cannot be
     // answered without looking them up; an answer given without a tool call
     // is held back and sent round again.
-    const lookup = mcpTools.length > 0 && LOOKUP_ASKED.test(text);
+    // "Try again", after something that was looked up, is looked up again.
+    const last = history.filter((message) => message.role === "user").at(-2);
+    const lookup = mcpTools.length > 0 && (sorted.lookup || (sorted.follows && words(text).length <= 4 && lookups.has(last)));
     // A sum is likewise not to be answered without being worked out.
-    const sums = /\d/.test(text) && SUM_ASKED.test(text);
+    const sums = sorted.sum;
     // Something recent or current is likewise not to be answered from what the model happens to believe.
-    const current = CURRENT_ASKED.test(text) && !LOOKUP_ASKED.test(text);
+    const current = sorted.about === "current" && !lookup;
     let worked = false;
     let credited = false; // the Oracle has been named as the source of what it supplied
     let corrected = false;
@@ -1916,12 +1904,9 @@ async function ask(text, { typed = false, files = [] } = {}) {
     // Something recent or current, or a request to ask the Oracle, is put to
     // the Oracle here. Told to consult it, the model as often wrote "the
     // Oracle says" and made the rest up.
-    let kind = current || ORACLE_ASKED.test(text) ? "current" : null;
-    if (!kind && cfg.router && !lookup && !sums && !guarded && !files.length && words(text).length >= 3) {
-      kind = await kindOf(text);
-      if (mine !== turn) return;
-      emit({ type: "kind", kind });
-    }
+    // Other facts about the world go to it too, unless the router is switched off.
+    const kind = current || sorted.oracle ? "current"
+      : cfg.router && sorted.about === "world" && !lookup && !sums && !guarded && !files.length ? "world" : null;
     if (kind === "current" || kind === "world") {
       setState("consulting");
       let answer = "";
@@ -1947,7 +1932,15 @@ async function ask(text, { typed = false, files = [] } = {}) {
     }
     // A day the user named is turned into its date here, where it is certain.
     const named = reminders.daysNamed(text);
-    if (named.length) seen += ` The user named ${named.length > 1 ? "days" : "a day"}. As dates: ${named.join("; ")}. Use those dates.`;
+    if (named.length) {
+      // Asked about tomorrow, the model answered as though it were tomorrow:
+      // "due today" for that day's tasks, "overdue from yesterday" for today's.
+      const today = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+      seen += ` The user named ${named.length > 1 ? "days" : "a day"}. As dates: ${named.join("; ")}. Use those dates.`
+        + ` Today is still ${today}, and you are speaking today: "today", "yesterday", "overdue" and "tomorrow" in your answer are`
+        + ` reckoned from ${today}, never from the day asked about. Call that day by its name or "that day". What a service`
+        + ` reports as overdue or due today is relative to its own clock or the date you gave it; say the date each thing is due instead.`;
+    }
     await reminderIntent(text);
     if (mine !== turn) return;
     seen += await keepIntent(text, files);

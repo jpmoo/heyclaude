@@ -109,7 +109,7 @@ export function calendar(now = Date.now()) {
 // The weekdays named in what the user said, each with its date.
 export function daysNamed(text, now = Date.now()) {
   const found = [];
-  for (const name of DAYS) {
+  for (const name of [...DAYS, "tomorrow", "yesterday"]) {
     if (new RegExp(`\\b${name}\\b`, "i").test(text)) found.push(`${name[0].toUpperCase()}${name.slice(1)} is ${dateOf(name, now)}`);
   }
   return found;

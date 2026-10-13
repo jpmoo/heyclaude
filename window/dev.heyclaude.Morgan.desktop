@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Morgan
+Comment=The conversation with your assistant
+Exec=/home/jpmoo/Documents/Scripts/heyclaude/bin/heyclaude window
+Icon=dev.heyclaude.Morgan
+Terminal=false
+Categories=Utility;
+StartupWMClass=dev.heyclaude.Morgan

@@ -21,7 +21,7 @@ import subprocess
 import sys
 
 from PySide6.QtCore import QEvent, QObject, QTimer, QUrl, Signal, Slot
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QIcon
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
@@ -173,6 +173,7 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("Morgan")
     app.setDesktopFileName("dev.heyclaude.Morgan")
+    app.setWindowIcon(QIcon(os.path.join(os.path.dirname(os.path.abspath(__file__)), "morgan.svg")))
     # One window. A second launch brings the first forward and goes away.
     first = QLocalSocket()
     first.connectToServer(ONE)

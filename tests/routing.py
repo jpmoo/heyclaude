@@ -49,7 +49,7 @@ def ask(question):
     watch.close()
     if not os.environ.get("RUNNING"):
         send("new").recv(200)  # each question on its own
-    time.sleep(1.5)
+    time.sleep(float(os.environ.get("PAUSE", 1.5)))
     return used, answer, time.time() - began
 
 

@@ -1,0 +1,941 @@
+[
+ {
+  "say": "What's on my calendar tomorrow?",
+  "want": {
+   "source": "self",
+   "lookup": true,
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "Tell me again about tomorrow's available tasks and events.",
+  "want": {
+   "source": "self",
+   "lookup": true,
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "I mean, tell me again about tomorrow's available tasks and events.",
+  "want": {
+   "source": "self",
+   "lookup": true,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "What tasks are available tomorrow?",
+  "want": {
+   "source": "self",
+   "lookup": true,
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "What do I have going on Friday?",
+  "want": {
+   "source": "self",
+   "lookup": true,
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "Anything due this week?",
+  "want": {
+   "source": "self",
+   "lookup": true,
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "Do I have any meetings today?",
+  "want": {
+   "source": "self",
+   "lookup": true,
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "What tasks are due Tuesday?",
+  "want": {
+   "source": "self",
+   "lookup": true,
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "What's on my plate Wednesday?",
+  "want": {
+   "source": "self",
+   "lookup": true,
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "Am I free Thursday afternoon?",
+  "want": {
+   "source": "self",
+   "lookup": true,
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "Which tasks are overdue?",
+  "want": {
+   "source": "self",
+   "lookup": true,
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "What are my tasks and events for tomorrow?",
+  "want": {
+   "source": "self",
+   "lookup": true,
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "When is my next meeting?",
+  "want": {
+   "source": "self",
+   "lookup": true,
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "What projects do I have open?",
+  "want": {
+   "source": "self",
+   "lookup": true,
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "What does my note on the budget say?",
+  "want": {
+   "source": "self",
+   "lookup": true,
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "Read me today's daily note.",
+  "want": {
+   "source": "self",
+   "lookup": true,
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "How many tasks do I have left today?",
+  "want": {
+   "source": "self",
+   "lookup": true,
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "What's my day look like?",
+  "want": {
+   "source": "self",
+   "lookup": true,
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "What is my dog's name?",
+  "want": {
+   "source": "self",
+   "lookup": false,
+   "follows": false
+  }
+ },
+ {
+  "say": "Where does my sister live?",
+  "want": {
+   "source": "self",
+   "lookup": false,
+   "follows": false
+  }
+ },
+ {
+  "say": "What do I do for a living?",
+  "want": {
+   "source": "self",
+   "lookup": false,
+   "follows": false
+  }
+ },
+ {
+  "say": "What's my commute like?",
+  "want": {
+   "source": "self",
+   "lookup": false,
+   "follows": false
+  }
+ },
+ {
+  "say": "What coffee do I like?",
+  "want": {
+   "source": "self",
+   "lookup": false,
+   "follows": false
+  }
+ },
+ {
+  "say": "Who is my wife?",
+  "want": {
+   "source": "self",
+   "lookup": false,
+   "follows": false
+  }
+ },
+ {
+  "say": "Add a task to call the dentist.",
+  "want": {
+   "source": "self",
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "Remember that I prefer oat milk.",
+  "want": {
+   "source": "self",
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "Set a timer for ten minutes.",
+  "want": {
+   "source": "self",
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "Remind me to take the bins out at seven.",
+  "want": {
+   "source": "self",
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "Create a task to renew my passport, due Friday.",
+  "want": {
+   "source": "self",
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "Mark the weekly review as done.",
+  "want": {
+   "source": "self",
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "Speak a little slower.",
+  "want": {
+   "source": "self",
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "What can you do?",
+  "want": {
+   "source": "self",
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "How are you doing this morning?",
+  "want": {
+   "source": "self",
+   "lookup": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "Tell me a short joke about bread.",
+  "want": {
+   "source": "self",
+   "lookup": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "Give me another word for stubborn.",
+  "want": {
+   "source": "self",
+   "lookup": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "Suggest a name for a grey cat.",
+  "want": {
+   "source": "self",
+   "lookup": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "Thanks, that's helpful.",
+  "want": {
+   "source": "self",
+   "lookup": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "Good morning.",
+  "want": {
+   "source": "self",
+   "lookup": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "Help me word a polite no to a meeting invitation.",
+  "want": {
+   "source": "self",
+   "lookup": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "What should I think about when planning a retirement party?",
+  "want": {
+   "source": "self",
+   "lookup": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "What's the capital of Australia?",
+  "want": {
+   "source": "self",
+   "lookup": false,
+   "follows": false
+  }
+ },
+ {
+  "say": "How many days are there in a leap year?",
+  "want": {
+   "source": "self",
+   "lookup": false,
+   "follows": false
+  }
+ },
+ {
+  "say": "How many days are in a week?",
+  "want": {
+   "source": "self",
+   "lookup": false,
+   "follows": false
+  }
+ },
+ {
+  "say": "What colour do you get mixing blue and yellow?",
+  "want": {
+   "source": "self",
+   "lookup": false,
+   "follows": false
+  }
+ },
+ {
+  "say": "Who directed the film Arrival?",
+  "want": {
+   "source": "oracle",
+   "lookup": false,
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "What is the half-life of carbon-14?",
+  "want": {
+   "source": "oracle",
+   "lookup": false,
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "In New York, can a landlord keep a security deposit for normal wear and tear?",
+  "want": {
+   "source": "oracle",
+   "lookup": false,
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "What is the drug metformin used to treat?",
+  "want": {
+   "source": "oracle",
+   "lookup": false,
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "Who composed the opera Tosca?",
+  "want": {
+   "source": "oracle",
+   "lookup": false,
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "How tall is Ben Nevis?",
+  "want": {
+   "source": "oracle",
+   "lookup": false,
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "Is it safe to take ibuprofen with lisinopril?",
+  "want": {
+   "source": "oracle",
+   "lookup": false,
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "What is the difference between a Roth IRA and a traditional IRA?",
+  "want": {
+   "source": "oracle",
+   "lookup": false,
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "Who is the author of the novel Piranesi?",
+  "want": {
+   "source": "oracle",
+   "lookup": false,
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "What is the tallest building in the world?",
+  "want": {
+   "source": "oracle",
+   "lookup": false,
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "What does the Raft consensus algorithm do when a leader fails?",
+  "want": {
+   "source": "oracle",
+   "lookup": false,
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "How many moons does Neptune have?",
+  "want": {
+   "source": "oracle",
+   "lookup": false,
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "What focal length is a 28mm lens equivalent to on an APS-C Canon body?",
+  "want": {
+   "source": "oracle",
+   "lookup": false,
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "What year did the Berlin Wall come down?",
+  "want": {
+   "source": "oracle",
+   "lookup": false,
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "How many calories are in an avocado?",
+  "want": {
+   "source": "oracle",
+   "lookup": false,
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "What's the population of Portugal?",
+  "want": {
+   "source": "oracle",
+   "lookup": false,
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "How does a heat pump work?",
+  "want": {
+   "source": "oracle",
+   "lookup": false,
+   "follows": false,
+   "sum": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "Who won the most recent Formula 1 race?",
+  "want": {
+   "source": "oracle",
+   "lookup": false,
+   "sum": false
+  }
+ },
+ {
+  "say": "What is the latest stable version of Python?",
+  "want": {
+   "source": "oracle",
+   "lookup": false,
+   "sum": false
+  }
+ },
+ {
+  "say": "How was the film Digger received by critics?",
+  "want": {
+   "source": "oracle",
+   "lookup": false,
+   "sum": false
+  }
+ },
+ {
+  "say": "What is the contribution limit for a 401k this year?",
+  "want": {
+   "source": "oracle",
+   "lookup": false,
+   "sum": false
+  }
+ },
+ {
+  "say": "How did the Philadelphia Eagles do this weekend?",
+  "want": {
+   "source": "oracle",
+   "lookup": false,
+   "sum": false
+  }
+ },
+ {
+  "say": "What's the weather tomorrow?",
+  "want": {
+   "source": "oracle",
+   "lookup": false,
+   "sum": false
+  }
+ },
+ {
+  "say": "What events are on in Philadelphia this weekend?",
+  "want": {
+   "source": "oracle",
+   "lookup": false,
+   "sum": false
+  }
+ },
+ {
+  "say": "Any news about the transit strike?",
+  "want": {
+   "source": "oracle",
+   "lookup": false,
+   "sum": false
+  }
+ },
+ {
+  "say": "What's the price of Bitcoin?",
+  "want": {
+   "source": "oracle",
+   "lookup": false,
+   "sum": false
+  }
+ },
+ {
+  "say": "Ask the Oracle what it knows about my sourdough recipe.",
+  "want": {
+   "oracle": true
+  }
+ },
+ {
+  "say": "What does the Oracle think of that?",
+  "want": {
+   "oracle": true
+  }
+ },
+ {
+  "say": "Check with the Oracle about the best way to prune roses.",
+  "want": {
+   "oracle": true
+  }
+ },
+ {
+  "say": "What's 18 percent of 240?",
+  "want": {
+   "sum": true,
+   "lookup": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "Split 187 dollars four ways.",
+  "want": {
+   "sum": true,
+   "lookup": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "What is 1,250 times 12?",
+  "want": {
+   "sum": true,
+   "lookup": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "What's a 20 percent tip on 64 dollars?",
+  "want": {
+   "sum": true,
+   "lookup": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "What's the average of 82, 91 and 77?",
+  "want": {
+   "sum": true,
+   "lookup": false,
+   "oracle": false
+  }
+ },
+ {
+  "say": "Try again.",
+  "want": {
+   "follows": true,
+   "lookup": true,
+   "source": "self"
+  },
+  "after": [
+   {
+    "role": "user",
+    "content": "What's on my calendar tomorrow?"
+   },
+   {
+    "role": "assistant",
+    "content": "Tomorrow, Wednesday the 14th, you have an admin meeting at 8:15 and a curriculum committee at 11."
+   }
+  ]
+ },
+ {
+  "say": "What about Friday?",
+  "want": {
+   "follows": true,
+   "lookup": true,
+   "source": "self"
+  },
+  "after": [
+   {
+    "role": "user",
+    "content": "What's on my calendar tomorrow?"
+   },
+   {
+    "role": "assistant",
+    "content": "Tomorrow, Wednesday the 14th, you have an admin meeting at 8:15 and a curriculum committee at 11."
+   }
+  ]
+ },
+ {
+  "say": "And my tasks?",
+  "want": {
+   "follows": true,
+   "lookup": true,
+   "source": "self"
+  },
+  "after": [
+   {
+    "role": "user",
+    "content": "What's on my calendar tomorrow?"
+   },
+   {
+    "role": "assistant",
+    "content": "Tomorrow, Wednesday the 14th, you have an admin meeting at 8:15 and a curriculum committee at 11."
+   }
+  ]
+ },
+ {
+  "say": "Say that again.",
+  "want": {
+   "follows": true,
+   "source": "self"
+  },
+  "after": [
+   {
+    "role": "user",
+    "content": "What's on my calendar tomorrow?"
+   },
+   {
+    "role": "assistant",
+    "content": "Tomorrow, Wednesday the 14th, you have an admin meeting at 8:15 and a curriculum committee at 11."
+   }
+  ]
+ },
+ {
+  "say": "Try again.",
+  "want": {
+   "follows": true
+  }
+ },
+ {
+  "say": "I mean the other one.",
+  "want": {
+   "follows": true
+  }
+ },
+ {
+  "say": "Why?",
+  "want": {
+   "follows": true
+  },
+  "after": [
+   {
+    "role": "user",
+    "content": "Who directed Arrival?"
+   },
+   {
+    "role": "assistant",
+    "content": "The Oracle says Denis Villeneuve directed Arrival."
+   }
+  ]
+ },
+ {
+  "say": "What else has he made?",
+  "want": {
+   "follows": true,
+   "source": "oracle",
+   "lookup": false
+  },
+  "after": [
+   {
+    "role": "user",
+    "content": "Who directed Arrival?"
+   },
+   {
+    "role": "assistant",
+    "content": "The Oracle says Denis Villeneuve directed Arrival."
+   }
+  ]
+ },
+ {
+  "say": "When did it come out?",
+  "want": {
+   "follows": true,
+   "source": "oracle",
+   "lookup": false
+  },
+  "after": [
+   {
+    "role": "user",
+    "content": "Who directed Arrival?"
+   },
+   {
+    "role": "assistant",
+    "content": "The Oracle says Denis Villeneuve directed Arrival."
+   }
+  ]
+ },
+ {
+  "say": "What breed is she?",
+  "want": {
+   "follows": true,
+   "source": "self"
+  },
+  "after": [
+   {
+    "role": "user",
+    "content": "What is my dog's name?"
+   },
+   {
+    "role": "assistant",
+    "content": "Your dog's name is Pickle."
+   }
+  ]
+ },
+ {
+  "say": "How tall is Ben Nevis?",
+  "want": {
+   "follows": false,
+   "source": "oracle",
+   "lookup": false
+  },
+  "after": [
+   {
+    "role": "user",
+    "content": "What's on my calendar tomorrow?"
+   },
+   {
+    "role": "assistant",
+    "content": "Tomorrow, Wednesday the 14th, you have an admin meeting at 8:15 and a curriculum committee at 11."
+   }
+  ]
+ },
+ {
+  "say": "What's on my calendar tomorrow?",
+  "want": {
+   "follows": false,
+   "source": "self",
+   "lookup": true
+  },
+  "after": [
+   {
+    "role": "user",
+    "content": "Who directed Arrival?"
+   },
+   {
+    "role": "assistant",
+    "content": "The Oracle says Denis Villeneuve directed Arrival."
+   }
+  ]
+ },
+ {
+  "say": "What is the boiling point of water in Fahrenheit?",
+  "want": {
+   "source": "self",
+   "lookup": false,
+   "follows": false
+  }
+ },
+ {
+  "say": "Who wrote Pride and Prejudice?",
+  "want": {
+   "source": "self",
+   "lookup": false,
+   "follows": false
+  }
+ },
+ {
+  "say": "What is the chemical symbol for gold?",
+  "want": {
+   "source": "self",
+   "lookup": false,
+   "follows": false
+  }
+ },
+ {
+  "say": "Which planet is the largest in the solar system?",
+  "want": {
+   "source": "self",
+   "lookup": false,
+   "follows": false
+  }
+ },
+ {
+  "say": "Who wrote Romeo and Juliet?",
+  "want": {
+   "source": "self",
+   "lookup": false,
+   "follows": false
+  }
+ },
+ {
+  "say": "How many continents are there?",
+  "want": {
+   "source": "self",
+   "lookup": false,
+   "follows": false
+  }
+ }
+]
