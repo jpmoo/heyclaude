@@ -12,20 +12,22 @@
 
 const KINDS = ["yours", "conversation", "settled", "world", "current"];
 
+// What the turn calls for is given as a list of only what applies, which is
+// most often nothing: nine yes-or-noes took half as long again to write out.
+const NEEDS = ["calendar_tasks_or_notes", "sum", "oracle", "asks_for_change", "reminder_or_timer", "asks_to_keep", "needs_seeing"];
+
 const SCHEMA = {
   type: "object",
   properties: {
     follows: { type: "boolean" },
     about: { type: "string", enum: KINDS },
-    calendar_tasks_or_notes: { type: "boolean" },
-    sum: { type: "boolean" },
-    oracle: { type: "boolean" },
+    calls_for: { type: "array", items: { type: "string", enum: NEEDS } },
   },
-  required: ["follows", "about", "calendar_tasks_or_notes", "sum", "oracle"],
+  required: ["follows", "about", "calls_for"],
 };
 
 const instructions = (name) => [
-  `Sort the user's latest message to ${name}, a voice assistant. Do not answer it. Give five things about it.`,
+  `Sort the user's latest message to ${name}, a voice assistant. Do not answer it. Give three things: follows, about, and calls_for.`,
   "",
   "follows: true if the message cannot be understood without what was said just before it: \"try again\", \"I mean...\",",
   "\"what about Friday?\", \"and the other one?\", \"say that again\", \"no, the second one\", \"why?\", or a question that says",
@@ -50,6 +52,9 @@ const instructions = (name) => [
   "- current: depends on what is happening now or lately in the world: news, results, scores, reviews, prices, weather,",
   "  versions, public events, who holds a post, this year's rates or limits. The user's own schedule is yours, not current.",
   "",
+  "calls_for: a list of every one of the following that is true of the message. For most messages none is, and the list is",
+  "then empty.",
+  "",
   "calendar_tasks_or_notes: true only if answering needs the user's calendar, task list, projects, notes or mail to be read: what is on, due,",
   "available, overdue, planned or scheduled; when a meeting is; what a note or task says. When the message follows a question",
   "of that sort and asks for it again (\"try again\"), or for another day or another part of it, this is true as well.",
@@ -61,9 +66,25 @@ const instructions = (name) => [
   "a product, a difference, an average. False for a question whose answer merely is a number.",
   "",
   `oracle: true only if the user asks in so many words for the Oracle to be asked or consulted, or what the Oracle says or thinks.`,
+  "",
+  "asks_for_change: true if the user is telling the assistant to make, add, change, move, complete, archive, delete, send or",
+  "schedule something in their task list, calendar, projects, notes or mail, in whatever words: \"add a task\", \"put milk on",
+  "the list\", \"push that to Friday\", \"I finished the review\", \"get rid of that one\". False for a question about what is",
+  "there or about what has been done (\"did you add it?\"), and false for timers and reminders.",
+  "",
+  "reminder_or_timer: true if the message is about a timer, alarm or reminder the assistant itself keeps: setting one (\"remind",
+  "me\", \"wake me at six\", \"let me know in ten minutes\", \"don't let me forget\"), asking what is set, or cancelling, moving",
+  "or snoozing one, including when that follows talk of reminders.",
+  "",
+  "asks_to_keep: true if the user asks for something to be remembered, saved, kept, stored or learned for later: a fact about",
+  "them, a file, a document, a recipe, a picture. False when they only ask what is already remembered.",
+  "",
+  "needs_seeing: true if answering needs the assistant to look right now at the camera, the screen, a window or the",
+  "clipboard: \"what am I holding?\", \"who is this?\", \"what's on my screen?\", \"read what I copied\", \"how do I look?\",",
+  "\"remember this is me\". False for a figure of speech (\"let's see\", \"look up\", \"I see\") and for pictures already saved.",
 ].join("\n");
 
-// Returns { follows, about, lookup, sum, oracle }, or null if it could not be sorted.
+// Returns { follows, about, lookup, sum, oracle, change, reminder, keep, look }, or null if it could not be sorted.
 // `earlier` is the last few messages of the conversation: [{ role, content }].
 export async function sortTurn({ url, model, keepAlive, name }, text, earlier = []) {
   const before = earlier.filter((message) => message.role !== "tool" && message.content).slice(-4)
@@ -81,8 +102,14 @@ export async function sortTurn({ url, model, keepAlive, name }, text, earlier = 
         ],
       }),
     });
-    const { calendar_tasks_or_notes: lookup, ...sorted } = JSON.parse((await response.json()).message.content);
-    return KINDS.includes(sorted.about) ? { ...sorted, lookup } : null;
+    const sorted = JSON.parse((await response.json()).message.content);
+    if (!KINDS.includes(sorted.about)) return null;
+    const calls = new Set(sorted.calls_for ?? []);
+    return {
+      follows: sorted.follows === true, about: sorted.about, lookup: calls.has("calendar_tasks_or_notes"), sum: calls.has("sum"),
+      oracle: calls.has("oracle"), change: calls.has("asks_for_change"), reminder: calls.has("reminder_or_timer"),
+      keep: calls.has("asks_to_keep"), look: calls.has("needs_seeing"),
+    };
   } catch (error) {
     console.error(`sort: ${error.message}`);
     return null;

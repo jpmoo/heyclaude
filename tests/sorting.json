@@ -6,7 +6,11 @@
    "lookup": true,
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -14,9 +18,12 @@
   "want": {
    "source": "self",
    "lookup": true,
-   "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -25,7 +32,11 @@
    "source": "self",
    "lookup": true,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -35,7 +46,11 @@
    "lookup": true,
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -45,7 +60,11 @@
    "lookup": true,
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -55,7 +74,11 @@
    "lookup": true,
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -65,7 +88,11 @@
    "lookup": true,
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -75,7 +102,11 @@
    "lookup": true,
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -85,7 +116,11 @@
    "lookup": true,
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -95,7 +130,11 @@
    "lookup": true,
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -105,7 +144,11 @@
    "lookup": true,
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -115,7 +158,11 @@
    "lookup": true,
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -125,7 +172,11 @@
    "lookup": true,
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -135,7 +186,11 @@
    "lookup": true,
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -145,7 +200,11 @@
    "lookup": true,
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -155,7 +214,11 @@
    "lookup": true,
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -165,7 +228,11 @@
    "lookup": true,
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -175,7 +242,11 @@
    "lookup": true,
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -183,7 +254,11 @@
   "want": {
    "source": "self",
    "lookup": false,
-   "follows": false
+   "follows": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -191,7 +266,11 @@
   "want": {
    "source": "self",
    "lookup": false,
-   "follows": false
+   "follows": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -199,7 +278,11 @@
   "want": {
    "source": "self",
    "lookup": false,
-   "follows": false
+   "follows": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -207,7 +290,11 @@
   "want": {
    "source": "self",
    "lookup": false,
-   "follows": false
+   "follows": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -215,7 +302,11 @@
   "want": {
    "source": "self",
    "lookup": false,
-   "follows": false
+   "follows": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -223,7 +314,11 @@
   "want": {
    "source": "self",
    "lookup": false,
-   "follows": false
+   "follows": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -232,7 +327,10 @@
    "source": "self",
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": true,
+   "reminder": false,
+   "look": false
   }
  },
  {
@@ -241,7 +339,10 @@
    "source": "self",
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "keep": true,
+   "change": false,
+   "look": false
   }
  },
  {
@@ -250,7 +351,9 @@
    "source": "self",
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "reminder": true,
+   "look": false
   }
  },
  {
@@ -259,7 +362,9 @@
    "source": "self",
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "reminder": true,
+   "look": false
   }
  },
  {
@@ -268,7 +373,10 @@
    "source": "self",
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": true,
+   "reminder": false,
+   "look": false
   }
  },
  {
@@ -277,7 +385,9 @@
    "source": "self",
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": true,
+   "reminder": false
   }
  },
  {
@@ -286,7 +396,11 @@
    "source": "self",
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -295,7 +409,11 @@
    "source": "self",
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -304,7 +422,11 @@
    "source": "self",
    "lookup": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -313,7 +435,11 @@
    "source": "self",
    "lookup": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -322,7 +448,11 @@
    "source": "self",
    "lookup": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -331,7 +461,11 @@
    "source": "self",
    "lookup": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -340,7 +474,11 @@
    "source": "self",
    "lookup": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -349,7 +487,11 @@
    "source": "self",
    "lookup": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -358,7 +500,11 @@
    "source": "self",
    "lookup": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -367,7 +513,11 @@
    "source": "self",
    "lookup": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -375,7 +525,11 @@
   "want": {
    "source": "self",
    "lookup": false,
-   "follows": false
+   "follows": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -383,7 +537,11 @@
   "want": {
    "source": "self",
    "lookup": false,
-   "follows": false
+   "follows": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -391,7 +549,11 @@
   "want": {
    "source": "self",
    "lookup": false,
-   "follows": false
+   "follows": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -399,7 +561,11 @@
   "want": {
    "source": "self",
    "lookup": false,
-   "follows": false
+   "follows": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -409,7 +575,11 @@
    "lookup": false,
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -419,7 +589,11 @@
    "lookup": false,
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -429,7 +603,11 @@
    "lookup": false,
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -439,7 +617,11 @@
    "lookup": false,
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -449,7 +631,11 @@
    "lookup": false,
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -459,7 +645,11 @@
    "lookup": false,
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -469,7 +659,11 @@
    "lookup": false,
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -479,7 +673,11 @@
    "lookup": false,
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -489,7 +687,11 @@
    "lookup": false,
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -499,7 +701,11 @@
    "lookup": false,
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -509,7 +715,11 @@
    "lookup": false,
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -519,7 +729,11 @@
    "lookup": false,
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -529,7 +743,11 @@
    "lookup": false,
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -539,7 +757,11 @@
    "lookup": false,
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -549,7 +771,11 @@
    "lookup": false,
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -559,7 +785,11 @@
    "lookup": false,
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -569,7 +799,11 @@
    "lookup": false,
    "follows": false,
    "sum": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -577,7 +811,11 @@
   "want": {
    "source": "oracle",
    "lookup": false,
-   "sum": false
+   "sum": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -585,7 +823,11 @@
   "want": {
    "source": "oracle",
    "lookup": false,
-   "sum": false
+   "sum": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -593,7 +835,11 @@
   "want": {
    "source": "oracle",
    "lookup": false,
-   "sum": false
+   "sum": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -601,7 +847,11 @@
   "want": {
    "source": "oracle",
    "lookup": false,
-   "sum": false
+   "sum": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -609,7 +859,11 @@
   "want": {
    "source": "oracle",
    "lookup": false,
-   "sum": false
+   "sum": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -617,7 +871,11 @@
   "want": {
    "source": "oracle",
    "lookup": false,
-   "sum": false
+   "sum": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -625,7 +883,11 @@
   "want": {
    "source": "oracle",
    "lookup": false,
-   "sum": false
+   "sum": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -633,7 +895,11 @@
   "want": {
    "source": "oracle",
    "lookup": false,
-   "sum": false
+   "sum": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -641,25 +907,41 @@
   "want": {
    "source": "oracle",
    "lookup": false,
-   "sum": false
+   "sum": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
   "say": "Ask the Oracle what it knows about my sourdough recipe.",
   "want": {
-   "oracle": true
+   "oracle": true,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
   "say": "What does the Oracle think of that?",
   "want": {
-   "oracle": true
+   "oracle": true,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
   "say": "Check with the Oracle about the best way to prune roses.",
   "want": {
-   "oracle": true
+   "oracle": true,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -667,7 +949,11 @@
   "want": {
    "sum": true,
    "lookup": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -675,7 +961,11 @@
   "want": {
    "sum": true,
    "lookup": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -683,7 +973,11 @@
   "want": {
    "sum": true,
    "lookup": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -691,7 +985,11 @@
   "want": {
    "sum": true,
    "lookup": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -699,7 +997,11 @@
   "want": {
    "sum": true,
    "lookup": false,
-   "oracle": false
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -707,7 +1009,11 @@
   "want": {
    "follows": true,
    "lookup": true,
-   "source": "self"
+   "source": "self",
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   },
   "after": [
    {
@@ -725,7 +1031,11 @@
   "want": {
    "follows": true,
    "lookup": true,
-   "source": "self"
+   "source": "self",
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   },
   "after": [
    {
@@ -743,7 +1053,11 @@
   "want": {
    "follows": true,
    "lookup": true,
-   "source": "self"
+   "source": "self",
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   },
   "after": [
    {
@@ -760,7 +1074,11 @@
   "say": "Say that again.",
   "want": {
    "follows": true,
-   "source": "self"
+   "source": "self",
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   },
   "after": [
    {
@@ -776,19 +1094,31 @@
  {
   "say": "Try again.",
   "want": {
-   "follows": true
+   "follows": true,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
   "say": "I mean the other one.",
   "want": {
-   "follows": true
+   "follows": true,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
   "say": "Why?",
   "want": {
-   "follows": true
+   "follows": true,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   },
   "after": [
    {
@@ -806,7 +1136,11 @@
   "want": {
    "follows": true,
    "source": "oracle",
-   "lookup": false
+   "lookup": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   },
   "after": [
    {
@@ -824,7 +1158,11 @@
   "want": {
    "follows": true,
    "source": "oracle",
-   "lookup": false
+   "lookup": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   },
   "after": [
    {
@@ -841,7 +1179,11 @@
   "say": "What breed is she?",
   "want": {
    "follows": true,
-   "source": "self"
+   "source": "self",
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   },
   "after": [
    {
@@ -859,7 +1201,11 @@
   "want": {
    "follows": false,
    "source": "oracle",
-   "lookup": false
+   "lookup": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   },
   "after": [
    {
@@ -877,7 +1223,11 @@
   "want": {
    "follows": false,
    "source": "self",
-   "lookup": true
+   "lookup": true,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   },
   "after": [
    {
@@ -895,7 +1245,11 @@
   "want": {
    "source": "self",
    "lookup": false,
-   "follows": false
+   "follows": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -903,7 +1257,11 @@
   "want": {
    "source": "self",
    "lookup": false,
-   "follows": false
+   "follows": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -911,7 +1269,11 @@
   "want": {
    "source": "self",
    "lookup": false,
-   "follows": false
+   "follows": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -919,7 +1281,11 @@
   "want": {
    "source": "self",
    "lookup": false,
-   "follows": false
+   "follows": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -927,7 +1293,11 @@
   "want": {
    "source": "self",
    "lookup": false,
-   "follows": false
+   "follows": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
   }
  },
  {
@@ -935,7 +1305,336 @@
   "want": {
    "source": "self",
    "lookup": false,
-   "follows": false
+   "follows": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
+  }
+ },
+ {
+  "say": "Put milk on the shopping list.",
+  "want": {
+   "change": true,
+   "reminder": false,
+   "look": false,
+   "source": "self"
+  }
+ },
+ {
+  "say": "Push the budget task to Friday.",
+  "want": {
+   "change": true,
+   "reminder": false,
+   "look": false,
+   "source": "self"
+  }
+ },
+ {
+  "say": "I finished the weekly review, check it off.",
+  "want": {
+   "change": true,
+   "reminder": false,
+   "look": false,
+   "source": "self"
+  }
+ },
+ {
+  "say": "Schedule a meeting with Robert for Thursday at two.",
+  "want": {
+   "change": true,
+   "reminder": false,
+   "look": false,
+   "source": "self"
+  }
+ },
+ {
+  "say": "Archive the old LCC project.",
+  "want": {
+   "change": true,
+   "reminder": false,
+   "look": false,
+   "source": "self"
+  }
+ },
+ {
+  "say": "Rename that tag to finance.",
+  "want": {
+   "change": true,
+   "reminder": false,
+   "look": false,
+   "source": "self"
+  }
+ },
+ {
+  "say": "Move my nine o'clock to ten.",
+  "want": {
+   "change": true,
+   "reminder": false,
+   "look": false,
+   "source": "self"
+  }
+ },
+ {
+  "say": "Jot down in today's note that the fire drill went fine.",
+  "want": {
+   "change": true,
+   "reminder": false,
+   "look": false,
+   "source": "self"
+  }
+ },
+ {
+  "say": "Did you add the task?",
+  "want": {
+   "change": false,
+   "reminder": false
+  }
+ },
+ {
+  "say": "Was the dentist task created?",
+  "want": {
+   "change": false,
+   "reminder": false
+  }
+ },
+ {
+  "say": "Which tasks did I finish yesterday?",
+  "want": {
+   "change": false,
+   "reminder": false
+  }
+ },
+ {
+  "say": "Wake me at six tomorrow.",
+  "want": {
+   "reminder": true,
+   "look": false
+  }
+ },
+ {
+  "say": "Let me know in twenty minutes.",
+  "want": {
+   "reminder": true,
+   "look": false
+  }
+ },
+ {
+  "say": "Don't let me forget to call Meghan at noon.",
+  "want": {
+   "reminder": true,
+   "look": false
+  }
+ },
+ {
+  "say": "What reminders do I have set?",
+  "want": {
+   "reminder": true,
+   "look": false
+  }
+ },
+ {
+  "say": "Cancel the timer.",
+  "want": {
+   "reminder": true,
+   "look": false
+  }
+ },
+ {
+  "say": "Snooze that for ten minutes.",
+  "want": {
+   "reminder": true,
+   "look": false
+  }
+ },
+ {
+  "say": "Nudge me about the laundry in an hour.",
+  "want": {
+   "reminder": true,
+   "look": false
+  }
+ },
+ {
+  "say": "Actually make it four.",
+  "want": {
+   "reminder": true,
+   "follows": true
+  },
+  "after": [
+   {
+    "role": "user",
+    "content": "Remind me to call the dentist at three."
+   },
+   {
+    "role": "assistant",
+    "content": "I'll remind you at 3:00 PM today to call the dentist."
+   }
+  ]
+ },
+ {
+  "say": "Cancel the one about the dentist.",
+  "want": {
+   "reminder": true
+  },
+  "after": [
+   {
+    "role": "user",
+    "content": "Remind me to call the dentist at three."
+   },
+   {
+    "role": "assistant",
+    "content": "I'll remind you at 3:00 PM today to call the dentist."
+   }
+  ]
+ },
+ {
+  "say": "Save this recipe for later.",
+  "want": {
+   "keep": true,
+   "reminder": false
+  }
+ },
+ {
+  "say": "Keep this document.",
+  "want": {
+   "keep": true,
+   "reminder": false
+  }
+ },
+ {
+  "say": "Learn what's in this file and remember it.",
+  "want": {
+   "keep": true,
+   "reminder": false
+  }
+ },
+ {
+  "say": "Store my passport number: it's in the file I attached.",
+  "want": {
+   "keep": true,
+   "reminder": false
+  }
+ },
+ {
+  "say": "Remember this is a picture of me.",
+  "want": {
+   "keep": true,
+   "reminder": false
+  }
+ },
+ {
+  "say": "Hold on to that article for me.",
+  "want": {
+   "keep": true,
+   "reminder": false
+  }
+ },
+ {
+  "say": "What do you remember about my sister?",
+  "want": {
+   "keep": false,
+   "look": false,
+   "lookup": false
+  }
+ },
+ {
+  "say": "What have you got saved about my commute?",
+  "want": {
+   "keep": false,
+   "look": false,
+   "lookup": false
+  }
+ },
+ {
+  "say": "What am I holding?",
+  "want": {
+   "look": true,
+   "reminder": false,
+   "change": false
+  }
+ },
+ {
+  "say": "Who is this?",
+  "want": {
+   "look": true,
+   "reminder": false,
+   "change": false
+  }
+ },
+ {
+  "say": "What's on my screen right now?",
+  "want": {
+   "look": true,
+   "reminder": false,
+   "change": false
+  }
+ },
+ {
+  "say": "Read what I just copied.",
+  "want": {
+   "look": true,
+   "reminder": false,
+   "change": false
+  }
+ },
+ {
+  "say": "How do I look today?",
+  "want": {
+   "look": true,
+   "reminder": false,
+   "change": false
+  }
+ },
+ {
+  "say": "Take a look at this error and tell me what's wrong.",
+  "want": {
+   "look": true,
+   "reminder": false,
+   "change": false
+  }
+ },
+ {
+  "say": "Can you see me?",
+  "want": {
+   "look": true,
+   "reminder": false,
+   "change": false
+  }
+ },
+ {
+  "say": "What does this label say?",
+  "want": {
+   "look": true,
+   "reminder": false,
+   "change": false
+  }
+ },
+ {
+  "say": "Let's see, what should I cook tonight?",
+  "want": {
+   "look": false,
+   "reminder": false
+  }
+ },
+ {
+  "say": "Look up the capital of Peru.",
+  "want": {
+   "look": false,
+   "reminder": false
+  }
+ },
+ {
+  "say": "I see, thanks.",
+  "want": {
+   "look": false,
+   "reminder": false
+  }
+ },
+ {
+  "say": "Show me my tasks for today.",
+  "want": {
+   "look": false,
+   "reminder": false
   }
  }
 ]

@@ -581,10 +581,9 @@ async function rememberPicture(args) {
 // camera, it will sometimes just say. So a turn that sounds as if it is about
 // seeing is put to a narrow yes-or-no question first, and the looking and the
 // saving are done here, before the model is asked for its answer.
-const SIGHT_WORDS = /\b(camera|webcam|screen|window|clipboard|copied|look(s|ing)?|see|seeing|hold(ing)?|wearing|picture|photo|face|recogni[sz]e|show(ing)?|what is this|what's this)\b/i;
 
-async function sightIntent(text) {
-  if (!cfg.sight.length || !SIGHT_WORDS.test(text)) return null;
+async function sightIntent(text, likely) {
+  if (!cfg.sight.length || !likely) return null;
   try {
     const response = await fetch(`${cfg.ollama.url}/api/chat`, {
       method: "POST",
@@ -727,7 +726,6 @@ async function findByWords(hint) {
 
 let due = reminders.load(); // [{ id, at, text, made }]
 let lastFired = null; // the reminder that last went off, for "snooze that"
-const REMIND_WORDS = /\b(remind|reminder|reminders|timer|timers|alarm|alarms|wake me|snooze|nudge me|don'?t let me forget)\b/i;
 
 const reminderList = () => (due.length
   ? [...due].sort((a, b) => a.at - b.at).map((entry) => `- ${entry.text || "a timer"}: ${reminders.when(entry.at)}`).join("\n")
@@ -735,11 +733,10 @@ const reminderList = () => (due.length
 
 let reminderTalk = 0; // when reminders were last the subject, so "cancel the one about the dentist" is understood
 
-async function reminderIntent(text) {
-  // The word need not be said again while they are the subject, or when
-  // there are some set and the user speaks of cancelling or moving one.
-  const following = due.length > 0 && (Date.now() - reminderTalk < 3 * 60_000 || /\b(cancel|delete|remove|clear|drop|scrap|snooze|postpone|push back|move)\b/i.test(text));
-  if (!REMIND_WORDS.test(text) && !following) return;
+async function reminderIntent(text, likely) {
+  // While reminders are the subject, what is said next is taken to be about them too.
+  const following = due.length > 0 && Date.now() - reminderTalk < 3 * 60_000;
+  if (!likely && !following) return;
   let intent;
   try {
     const response = await fetch(`${cfg.ollama.url}/api/chat`, {
@@ -866,10 +863,9 @@ setInterval(() => {
   if (entry) fire(entry);
 }, 1000).unref();
 
-const KEEP_WORDS = /\b(remember|keep|save|store|memori[sz]e|hold on to|file away|learn)\b/i;
 
-async function keepIntent(text, files) {
-  if (!KEEP_WORDS.test(text) || !(files.length || lastRead || cfg.folders.length)) return "";
+async function keepIntent(text, files, likely) {
+  if (!likely || !(files.length || lastRead || cfg.folders.length)) return "";
   let intent;
   try {
     const response = await fetch(`${cfg.ollama.url}/api/chat`, {
@@ -1367,7 +1363,6 @@ let proposals = []; // [{ name, args }], all put forward in the same turn
 let agreedTo = ""; // a question the user has just said yes to, asked in words with no proposal behind it
 let acted = false; // something was put forward or carried out in this turn
 
-const CHANGE_ASKED = /\b(add|create|make|new|delete|remove|archive|unarchive|update|change|edit|rename|move|mark|complete|finish|send|reply|forward|schedule|reschedule|cancel|set|put|tag|assign|draft|post|save)\b/i;
 const CHANGE_CLAIMED = /\b(i've|i have|i just|i went ahead|has been|have been|is now|are now|it's been|all set|all done|taken care of|successfully)\b[^.?!]*\b(added|created|made|deleted|removed|archived|unarchived|updated|changed|edited|renamed|moved|marked|completed|sent|replied|forwarded|scheduled|rescheduled|cancelled|canceled|set|tagged|assigned|drafted|posted|saved|done)\b|\ball set\b|\bsuccessfully\b/i;
 const CHANGE_SPOKEN_OF = /\b(i['’]?m|i am|i['’]ll|i will|i['’]m about to|i['’]m going to|let me)\b[^.?!]{0,40}\b(creat|add|remov|delet|updat|chang|renam|mov|archiv|mark|schedul|tagg|sett)(e|es|ed|ing)?\b|,\s*(ok|okay|alright|all right|right)\?\s*$/i;
 const PERMISSION_ASKED = /\b(shall i|should i|want me to|would you like me to|do you want me to|like me to|is that (ok|okay|right|correct)|does that (work|sound)|sound (good|right)|go ahead|proceed|confirm)\b[^.!]*\?/i;
@@ -1815,9 +1810,9 @@ async function ask(text, { typed = false, files = [] } = {}) {
   const lapsed = history.length ? [] : lastConversation();
   const sorted = (YES.test(words(text).join(" ")) ? null
     : await sortTurn({ ...cfg.ollama, name: cfg.name }, text, history.length ? history : lapsed.flatMap((item) => [{ role: "user", content: item.user }, { role: "assistant", content: item.morgan }])))
-    ?? { follows: false, about: null, lookup: false, sum: false, oracle: false };
+    ?? { follows: false, about: null, lookup: false, sum: false, oracle: false, change: false, reminder: false, keep: false, look: false };
   if (mine !== turn) return;
-  emit({ type: "kind", kind: sorted.about, lookup: sorted.lookup, follows: sorted.follows, sum: sorted.sum });
+  emit({ type: "kind", kind: sorted.about, ...Object.fromEntries(Object.entries(sorted).filter(([key, value]) => key !== "about" && value)) });
   // "Try again", said after the conversation has lapsed, means the last thing
   // talked about; so that conversation is picked back up.
   if (sorted.follows) {
@@ -1869,8 +1864,7 @@ async function ask(text, { typed = false, files = [] } = {}) {
     // until it is whole, so that a false "done" is never spoken.
     // A question about what has been done ("did you create it?") is not a
     // request to do it, and a true "yes, I created it" is not to be taken for a false one.
-    const asking = /^(did|have|has|had|is|was|are|were|do|does|what|which|when|where|why|how|who)\b/i.test(text.trim());
-    const guarded = changes.size > 0 && !asking && (CHANGE_ASKED.test(text) || YES.test(words(text).join(" ")));
+    const guarded = changes.size > 0 && (sorted.change || YES.test(words(text).join(" ")));
     let nudges = 0; // times it has been sent back for speaking of a change without calling for it
     // A question about the user's own calendar, tasks or notes cannot be
     // answered without looking them up; an answer given without a tool call
@@ -1941,11 +1935,11 @@ async function ask(text, { typed = false, files = [] } = {}) {
         + ` reckoned from ${today}, never from the day asked about. Call that day by its name or "that day". What a service`
         + ` reports as overdue or due today is relative to its own clock or the date you gave it; say the date each thing is due instead.`;
     }
-    await reminderIntent(text);
+    await reminderIntent(text, sorted.reminder);
     if (mine !== turn) return;
-    seen += await keepIntent(text, files);
+    seen += await keepIntent(text, files, sorted.keep);
     if (mine !== turn) return;
-    const intent = await sightIntent(text);
+    const intent = await sightIntent(text, sorted.look);
     if (mine !== turn) return;
     if (intent) {
       emit({ type: "look", source: intent.look });
@@ -2112,7 +2106,7 @@ async function ask(text, { typed = false, files = [] } = {}) {
         } else if (call.function.name === "search_conversations") {
           result = await searchTool(call.function.arguments ?? {});
           if (mine !== turn) return;
-        } else if (call.function.name === "remember" && fresh && !KEEP_WORDS.test(text)) {
+        } else if (call.function.name === "remember" && fresh && !sorted.keep) {
           // What tomorrow's calendar holds is not a fact about the user.
           result = "Not saved. This turn was answered from a lookup, and what a lookup returns is how things stand today, not "
             + "something to remember about the user. Only what they tell you about themselves is.";

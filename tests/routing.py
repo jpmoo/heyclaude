@@ -71,7 +71,7 @@ def main():
         slow.append(took)
         flag = ("  " if right_route else "R ") + ("  " if right_answer else "A ")
         via = "+".join(sorted(used)) or "self"
-        via += "/" + (kinds[0] if kinds else "-")
+        via += "/" + str(kinds[0] if kinds else "-")
         print(f"{flag}{took:5.1f}s {via:18} {entry['q'][:62]:62} | {answer[:70]!r}")
     total = len(questions)
     print(f"\n{label}: routed as intended {routed}/{total}; answers holding what they should {answered}/{checked}; "
