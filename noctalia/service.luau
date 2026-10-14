@@ -26,8 +26,8 @@ local function say(who: string, text: string)
 end
 
 -- A step Morgan took, for the chat window to show as a small card.
-local function act(glyph: string, title: string, detail: string)
-  table.insert(log, { who = "act", glyph = glyph, text = title, detail = detail })
+local function act(glyph: string, title: string, detail: string, body: string?)
+  table.insert(log, { who = "act", glyph = glyph, text = title, detail = detail, body = body })
   while #log > LOG do
     table.remove(log, 1)
   end
@@ -210,8 +210,16 @@ local function onLine(line: string)
   elseif event.type == "tool" then
     local glyph, title = describeTool(event.name)
     act(glyph, title, details(event.args))
+    log[#log].tool = true
+  elseif event.type == "result" then
+    -- What a tool returned, to be opened under its card.
+    local last = log[#log]
+    if last and last.tool and type(event.text) == "string" then
+      last.body = event.text
+      noctalia.state.set("log", log)
+    end
   elseif event.type == "recall" then
-    act("book", "Read from memory", tostring(event.topic or ""))
+    act("book", "Read from memory", tostring(event.topic or ""), if type(event.body) == "string" then event.body else nil)
   elseif event.type == "confirm" then
     local _, title = describeTool(event.name)
     if event.done == nil then
@@ -223,7 +231,7 @@ local function onLine(line: string)
     end
   elseif event.type == "memory" then
     if event.rewritten then
-      act("brain", "Tidied memory", tostring(event.topic or ""))
+      act("brain", "Tidied memory", tostring(event.topic or ""), if type(event.body) == "string" then event.body else nil)
     else
       act("bookmark", `Remembered in {event.topic}`, tostring(event.note or ""))
     end
@@ -241,22 +249,72 @@ noctalia.state.set("levels", levels)
 noctalia.state.set("log", log)
 noctalia.state.set("partial", "")
 
--- Earlier conversations, so the chat window opens with something to scroll back through.
-noctalia.runAsync({ heyclaude, "recent", "40" }, function(result)
-  local reply = noctalia.json.decode(result.stdout or "")
-  if type(reply) ~= "table" or type(reply.items) ~= "table" then
+-- Exchanges from the record, with the cards that were shown at the time,
+-- replayed through the same handling as live events.
+local function replay(items)
+  for _, item in ipairs(items) do
+    table.insert(log, { who = "you", text = item.user })
+    for _, step in ipairs(if type(item.steps) == "table" then item.steps else {}) do
+      onLine(noctalia.json.encode(step))
+    end
+    table.insert(log, { who = "morgan", text = item.morgan, t = item.t, hidden = item.hidden, good = item.good, review = item.review, oracle = item.oracle })
+  end
+end
+
+local function trim()
+  while #log > LOG do
+    table.remove(log, 1)
+  end
+end
+
+-- Earlier conversations, so the chat window opens with something to scroll
+-- back through. What arrived meanwhile goes after.
+local function recent(keep: boolean)
+  noctalia.runAsync({ heyclaude, "recent", "40" }, function(result)
+    local reply = noctalia.json.decode(result.stdout or "")
+    if type(reply) ~= "table" or type(reply.items) ~= "table" then
+      return
+    end
+    local meanwhile = if keep then log else {}
+    log = {}
+    replay(reply.items)
+    for _, line in ipairs(meanwhile) do
+      table.insert(log, line)
+    end
+    trim()
+    noctalia.state.set("log", log)
+  end)
+end
+
+recent(true)
+
+-- The chat window's calendar asks for an earlier conversation to be shown in
+-- place of the one going on, or ("recent") for the way back.
+noctalia.state.watch("load_request", function(request)
+  if type(request) ~= "table" or type(request.id) ~= "string" then
     return
   end
-  local earlier = {}
-  for _, item in ipairs(reply.items) do
-    table.insert(earlier, { who = "you", text = item.user })
-    table.insert(earlier, { who = "morgan", text = item.morgan, t = item.t, hidden = item.hidden, good = item.good, review = item.review, oracle = item.oracle })
+  if request.id == "recent" then
+    recent(false)
+    return
   end
-  for _, line in ipairs(log) do
-    table.insert(earlier, line)
-  end
-  log = earlier
-  noctalia.state.set("log", log)
+  noctalia.runAsync({ heyclaude, "conversation", request.id }, function(result)
+    local reply = noctalia.json.decode(result.stdout or "")
+    if type(reply) ~= "table" or not reply.ok then
+      return
+    end
+    local related = {}
+    for _, entry in ipairs(if type(reply.earlier) == "table" then reply.earlier else {}) do
+      table.insert(related, { id = entry.id, title = entry.title, when = entry.when, how = "Possibly continues" })
+    end
+    for _, entry in ipairs(if type(reply.later) == "table" then reply.later else {}) do
+      table.insert(related, { id = entry.id, title = entry.title, when = entry.when, how = "Possibly continued in" })
+    end
+    log = { { who = "past", text = tostring(reply.title or ""), detail = tostring(reply.when or ""), related = related } }
+    replay(reply.items or {})
+    trim()
+    noctalia.state.set("log", log)
+  end)
 end)
 
 -- A request from the chat window to attach files (see chat.luau).

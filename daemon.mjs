@@ -1004,7 +1004,7 @@ function recallDocument(args) {
   const found = kept.find((entry) => slug(entry.title) === slug(title))
     ?? kept.map((entry) => ({ entry, hits: wanted.filter((word) => words(entry.title).includes(word)).length })).sort((a, b) => b.hits - a.hits).find((match) => match.hits > 0)?.entry;
   if (!found) return `There is no kept document called ${title}. You have: ${kept.map((entry) => entry.title).join(", ")}`;
-  emit({ type: "recall", topic: found.title });
+  emit({ type: "recall", topic: found.title, body: found.text.length > 2000 ? `${found.text.slice(0, 2000)}…` : found.text });
   return `${found.title} (kept ${new Date(found.t).toLocaleDateString()}, from ${basename(found.source)}):\n\n${found.text}`;
 }
 
@@ -1067,7 +1067,18 @@ async function fileTool(name, args) {
 let state = "idle"; // idle | listening | transcribing | thinking | consulting | speaking
 const watchers = new Set();
 
+// The steps taken in the turn in hand (the cards a conversation view shows),
+// filed with its exchange so that a view opened later can show them again.
+const STEPS = new Set(["consult", "tool", "result", "recall", "look", "memory", "confirm", "reminder"]);
+let steps = [];
+
 function emit(event) {
+  // A reminder going off is not a step in anyone's turn, and is not to go off again when replayed.
+  if (STEPS.has(event.type) && !(event.type === "reminder" && !event.set) && steps.length < 40) {
+    steps.push(typeof event.body === "string" || typeof event.text === "string"
+      ? { ...event, ...(typeof event.body === "string" ? { body: event.body.slice(0, 2000) } : {}), ...(typeof event.text === "string" ? { text: event.text.slice(0, 2000) } : {}) }
+      : event);
+  }
   const line = JSON.stringify(event) + "\n";
   for (const socket of watchers) socket.write(line);
 }
@@ -1269,7 +1280,8 @@ function memoryTool(name, args, sources = null) {
   if (!slug(topic)) return "No topic given.";
   const existing = readTopic(topic);
   if (name === "recall") {
-    emit({ type: "recall", topic });
+    // What was read goes with the card, so it can be opened and looked at.
+    emit({ type: "recall", topic, body: existing ? existing.notes.map((note) => `- ${note}`).join("\n") || "(It holds no notes.)" : `There is no topic called ${topic}.` });
     if (!existing) return `There is no topic called ${topic}. Your topics:\n${topicList()}`;
     // Older notes were sometimes written in the user's own voice.
     return `${existing.name}: ${existing.description}\n(These are notes about ${cfg.userName ?? "the user"}. Where one says I, me or my, it means them, not you.)\n${existing.notes.map((note) => `- ${note}`).join("\n")}`;
@@ -1296,7 +1308,19 @@ function memoryTool(name, args, sources = null) {
     if (slug(newName) !== slug(topic) && readTopic(newName)) return `A topic called ${newName} already exists; recall and rewrite that one.`;
     rmSync(topicPath(topic), { force: true });
     if (notes.length) writeTopic({ name: newName, description: args.description || existing.description, notes });
-    emit({ type: "memory", topic: newName, rewritten: true, notes: notes.length });
+    // What the tidying changed, for the card: dropped, new or reworded, and how many were left alone.
+    const bare = (note) => note.replace(/\s*\(\d{4}-\d{2}-\d{2}\)\s*$/, "").trim();
+    const was = new Set(existing.notes.map(bare));
+    const now = new Set(notes.map(bare));
+    const dropped = [...was].filter((note) => !now.has(note));
+    const added = [...now].filter((note) => !was.has(note));
+    const body = [
+      slug(newName) !== slug(topic) ? `Renamed from **${existing.name}**.` : "",
+      dropped.length ? `**Taken out or reworded**\n${dropped.map((note) => `- ${note}`).join("\n")}` : "",
+      added.length ? `**Now reads**\n${added.map((note) => `- ${note}`).join("\n")}` : "",
+      `${notes.length - added.length} of ${notes.length} notes unchanged.`,
+    ].filter(Boolean).join("\n\n");
+    emit({ type: "memory", topic: newName, rewritten: true, notes: notes.length, body });
     return notes.length ? `Rewrote ${newName} with ${notes.length} notes.` : `Deleted ${topic}.`;
   }
   return `Unknown tool: ${name}`;
@@ -1581,7 +1605,7 @@ const exchangeOf = new WeakMap(); // a user message in the conversation -> the e
 seedTopics();
 transcript.reindex();
 // Not at once: the first thing said after a start should not have to wait behind this.
-setTimeout(() => backfillThreads().catch((error) => console.error(`threads: ${error.message}`)), 30_000).unref();
+setTimeout(() => backfillThreads().then(backfillLinks).catch((error) => console.error(`threads: ${error.message}`)), 30_000).unref();
 
 // A conversation interrupted by a restart carries on where it left off.
 for (const item of transcript.since(Date.now() - cfg.idleResetMinutes * 60_000)) {
@@ -1592,6 +1616,39 @@ for (const item of transcript.since(Date.now() - cfg.idleResetMinutes * 60_000))
   history.push(restored, { role: "assistant", content: item.morgan });
   began ||= item.t;
   unfiled++;
+}
+
+// An exchange as the conversation views are given it.
+function shown({ t, user, morgan, oracle, hidden, good, steps: taken }) {
+  return { t, user, morgan, ...(oracle ? { oracle } : {}), ...(taken ? { steps: taken } : {}), hidden: Boolean(hidden), good: Boolean(good), ...(hidden ? { review: notesFrom(t) } : {}) };
+}
+
+const clockOf = (t) => new Date(t).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+const isoDay = (t) => { const day = new Date(t); return `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`; };
+
+// Every earlier conversation, as a calendar shows it: the threads talk was
+// cut into, each with its title, and talk not yet cut into threads, taken a
+// sitting at a time and named by its first words. Answers that were hidden
+// are left out, and a conversation that was nothing else is left out whole.
+function conversations() {
+  const byTime = new Map(transcript.items.filter((item) => !item.hidden).map((item) => [item.t, item]));
+  const found = transcript.threads.map((thread) => {
+    const items = thread.ts.map((t) => byTime.get(t)).filter(Boolean);
+    return { id: thread.id, t0: thread.t0, t1: thread.t1 ?? thread.t0, title: thread.title, items };
+  }).filter((entry) => entry.items.length);
+  let sitting = [];
+  const close = () => {
+    if (!sitting.length) return;
+    const first = sitting[0].user.replace(/\s+/g, " ").trim().split(" ");
+    found.push({ id: `u${sitting[0].t}`, t0: sitting[0].t, t1: sitting.at(-1).t, title: first.slice(0, 7).join(" ") + (first.length > 7 ? "…" : ""), items: sitting });
+    sitting = [];
+  };
+  for (const item of transcript.unthreaded()) {
+    if (sitting.length && item.t - sitting.at(-1).t > cfg.idleResetMinutes * 60_000) close();
+    sitting.push(item);
+  }
+  close();
+  return found;
 }
 
 // The most recent conversation, if there was one in the last half day: its
@@ -1614,10 +1671,11 @@ async function searchTool(args) {
     to: Math.min(day(args.to, true) ?? Infinity, began || Infinity),
     limit: 8,
   });
-  emit({ type: "recall", topic: args.query ?? `${args.from ?? ""} to ${args.to ?? ""}` });
   const about = args.query ? (await transcript.searchThreads({ query: String(args.query), to: began || Infinity, limit: 3, live: true })).filter((hit) => hit.score >= 0.45) : [];
   const found = [...about.map((hit) => describeThread(hit, 500)), ...hits.map((hit) => describe(hit, 700))];
-  return found.length ? found.join("\n") : "Nothing was found.";
+  const result = found.length ? found.join("\n") : "Nothing was found.";
+  emit({ type: "recall", topic: args.query ? `earlier talk: ${args.query}` : `earlier talk, ${args.from ?? ""} to ${args.to ?? ""}`, body: result.slice(0, 4000) });
+  return result;
 }
 
 // Thumbs down: the exchange stays on the record and is kept from the model
@@ -1699,9 +1757,47 @@ async function fileThreads(items) {
   if (!sound) threads = [{ title: items[0].user.replace(/\s+/g, " ").slice(0, 60), summary: items.map((item) => item.user.replace(/\s+/g, " ")).join(" / ").slice(0, 400), exchanges: items.map((_, index) => index + 1) }];
   const left = items.map((_, index) => index + 1).filter((number) => !seen.has(number));
   if (sound && left.length) threads.push({ title: "Other remarks", summary: left.map((number) => items[number - 1].user.replace(/\s+/g, " ")).join(" / ").slice(0, 400), exchanges: left });
+  const made = [];
   for (const thread of threads) {
     const members = thread.exchanges.map((number) => items[number - 1]).sort((a, b) => a.t - b.t);
-    if (members.length) await transcript.addThread({ title: String(thread.title).trim(), summary: String(thread.summary).trim(), items: members });
+    if (members.length) made.push(await transcript.addThread({ title: String(thread.title).trim(), summary: String(thread.summary).trim(), items: members }));
+  }
+  for (const thread of made) await linkThread(thread);
+}
+
+// A subject taken up again in a later sitting is kept as a conversation of
+// its own, with a note of the earlier ones it may carry on from, so that each
+// can be found from the other. Likeness of meaning decides it alone: on pairs
+// from the record whose answer was known it sorted 11 of 12, where asking the
+// model sorted 8 of 13. Left out are threads from the same sitting (already
+// cut apart as different subjects), records of a lookup (every day's "what's
+// on my calendar" is alike, and none carries on from another), and threads too
+// slight to be about anything, such as a greeting.
+const LINK_LIKENESS = 0.78; // related pairs from 12-14 October 2026 came at 0.79 and above, unrelated at 0.77 and below
+
+function slight(thread) {
+  const said = transcript.items.filter((item) => thread.ts.includes(item.t)).map((item) => item.user).join(" ");
+  return words(said).length < 4;
+}
+
+// Made only of answers read off a calendar, a task list or the like. An answer
+// from the Oracle is "live" too, but a question put to it is a subject like any other.
+function lookedUp(thread) {
+  return transcript.items.filter((item) => thread.ts.includes(item.t)).every((item) => item.live && !item.oracle);
+}
+
+async function linkThread(thread) {
+  const follows = lookedUp(thread) || slight(thread) ? [] : transcript.near(thread, { limit: 6 })
+    .filter(({ thread: other, score }) => score >= LINK_LIKENESS && !lookedUp(other) && !slight(other) && other.t1 < thread.t0 - cfg.idleResetMinutes * 60_000)
+    .slice(0, 2)
+    .map(({ thread: other }) => other.id);
+  transcript.link(thread, follows);
+}
+
+// Threads made before they were linked, oldest first, so that each can find those before it.
+async function backfillLinks() {
+  for (const thread of [...transcript.threads].sort((a, b) => a.t0 - b.t0)) {
+    if (!thread.linked) await linkThread(thread);
   }
 }
 
@@ -1848,6 +1944,7 @@ async function ask(text, { typed = false, files = [] } = {}) {
   const saw = [];
   fresh = false;
   noted = [];
+  steps = [];
   try {
     // Earlier talk is brought back a thread at a time: what it was about and
     // how it came out, with the exchange or two that bear on this. A single
@@ -2098,6 +2195,8 @@ async function ask(text, { typed = false, files = [] } = {}) {
         if (call.function.name.includes("__")) {
           result = await mcpTool(call.function.name, call.function.arguments ?? {});
           if (mine !== turn) return;
+          // What came back, to open under the tool's card. Not for a change, whose "result" is the proposal put to the model.
+          if (!changes.has(call.function.name)) emit({ type: "result", text: String(result).slice(0, 4000) });
         } else if (call.function.name === "remember_picture") {
           emit({ type: "look", source: String(call.function.arguments?.source ?? "camera") });
           result = await rememberPicture(call.function.arguments ?? {});
@@ -2180,7 +2279,9 @@ async function ask(text, { typed = false, files = [] } = {}) {
       ...(saw.length ? { saw: saw.join(" ") } : {}),
       ...(told.length ? { oracle: told.join(" ") } : {}),
       ...(fresh || saw.length || acted ? { live: true } : {}),
+      ...(steps.length ? { steps } : {}),
     });
+    steps = [];
   }
   speakFlush();
   finishSpeaking();
@@ -3014,7 +3115,41 @@ function handle(line, socket) {
       return reply({ ok: true, state });
     case "recent": {
       const count = Math.min(Number(rest[0]) || 50, 500);
-      return reply({ ok: true, items: transcript.items.slice(-count).map(({ t, user, morgan, oracle, hidden, good }) => ({ t, user, morgan, ...(oracle ? { oracle } : {}), hidden: Boolean(hidden), good: Boolean(good), ...(hidden ? { review: notesFrom(t) } : {}) })) });
+      return reply({ ok: true, items: transcript.items.slice(-count).map(shown) });
+    }
+    case "days": {
+      // days YYYY-MM: the conversations of each day in that month, for a calendar.
+      const [year, month] = String(rest[0] ?? isoDay(Date.now()).slice(0, 7)).split("-").map(Number);
+      if (!year || !month) return reply({ ok: false, error: "days wants a month: YYYY-MM" });
+      const from = new Date(year, month - 1, 1).getTime();
+      const to = new Date(year, month, 1).getTime();
+      const days = {};
+      for (const entry of conversations()) {
+        if (entry.t0 < from || entry.t0 >= to) continue;
+        const day = isoDay(entry.t0);
+        (days[day] ??= []).push({ id: entry.id, t0: entry.t0, t1: entry.t1, title: entry.title, exchanges: entry.items.length, clock: clockOf(entry.t0) });
+      }
+      for (const list of Object.values(days)) list.sort((a, b) => a.t0 - b.t0);
+      // And the month laid out, for a view that cannot easily work dates out: its name, the
+      // weekday of the 1st (0 is Sunday), how many days it has, and today (YYYY-MM-DD).
+      return reply({
+        ok: true, days, key: `${year}-${String(month).padStart(2, "0")}`, name: new Date(from).toLocaleDateString("en-US", { month: "long", year: "numeric" }),
+        first: new Date(from).getDay(), length: new Date(year, month, 0).getDate(), today: isoDay(Date.now()),
+      });
+    }
+    case "conversation": {
+      // conversation <id>: its exchanges, as recent gives them.
+      const found = conversations().find((entry) => entry.id === rest[0]);
+      if (!found) return reply({ ok: false, error: "no such conversation" });
+      // And the conversations it may carry on from, and those that may carry it on.
+      const brief = (thread) => ({ id: thread.id, title: thread.title, when: `${new Date(thread.t0).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}, ${clockOf(thread.t0)}` });
+      const own = transcript.threads.find((thread) => thread.id === found.id);
+      const earlier = (own?.follows ?? []).map((id) => transcript.threads.find((thread) => thread.id === id)).filter(Boolean).map(brief);
+      const later = transcript.threads.filter((thread) => thread.follows?.includes(found.id)).sort((a, b) => a.t0 - b.t0).map(brief);
+      return reply({
+        ok: true, id: found.id, t0: found.t0, title: found.title, items: found.items.map(shown), earlier, later,
+        when: `${new Date(found.t0).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}, ${clockOf(found.t0)}`,
+      });
     }
     case "settle": {
       // settle { t, topic, note, action }: the user's verdict on a note that may have come from a hidden answer

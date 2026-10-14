@@ -201,7 +201,16 @@ def main() -> int:
         wait = int(os.environ.get("HEYCLAUDE_WINDOW_WAIT", "6000"))
 
         def record() -> None:
-            window.grab().save(shot)
+            # Every fold opened first, if asked for, to see what is inside them.
+            # Or some other script run first, such as clicking something open.
+            if os.environ.get("HEYCLAUDE_WINDOW_OPEN") or os.environ.get("HEYCLAUDE_WINDOW_RUN"):
+                window.view.page().runJavaScript(os.environ.get("HEYCLAUDE_WINDOW_RUN") or "document.querySelectorAll('details').forEach((box) => box.open = true)")
+                QTimer.singleShot(int(os.environ.get("HEYCLAUDE_WINDOW_SETTLE", "400")), lambda: (window.grab().save(shot), describe()))
+            else:
+                window.grab().save(shot)
+                describe()
+
+        def describe() -> None:
             # And what the page holds, as text, for when there is nothing to draw on.
             window.view.page().runJavaScript(
                 "JSON.stringify({ title: document.title, name: document.getElementById('name').textContent,"

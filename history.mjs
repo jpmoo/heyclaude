@@ -93,6 +93,27 @@ export class Transcript {
     appendFileSync(join(this.dir, "thread-vectors.sealed"), seal(JSON.stringify({ id: thread.id, v: stored, m: this.model })) + "\n", { mode: 0o600 });
   }
 
+  // Earlier threads nearest in meaning to this one, best first, each with its
+  // likeness (0 to 1): those that ended before it began and within `days`.
+  near(thread, { days = 14, limit = 3 } = {}) {
+    if (!thread.v) return [];
+    const like = (other) => { let sum = 0; for (let i = 0; i < other.length; i++) sum += thread.v[i] * other[i]; return sum; };
+    return this.threads
+      .filter((other) => other !== thread && other.v && other.t1 < thread.t0 && other.t0 > thread.t0 - days * 86_400_000)
+      .map((other) => ({ thread: other, score: like(other.v) }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit);
+  }
+
+  // Note that a thread may carry on from earlier ones (`follows`, their ids),
+  // and that it has been looked at, so it is not looked at again.
+  link(thread, follows) {
+    thread.linked = true;
+    if (follows.length) thread.follows = follows; else delete thread.follows;
+    const plain = (list) => list.map(({ v, ...rest }) => seal(JSON.stringify(rest))).join("\n") + (list.length ? "\n" : "");
+    writeFileSync(join(this.dir, "threads.sealed"), plain(this.threads), { mode: 0o600 });
+  }
+
   // The threads nearest in meaning to what was said, each with the one or two
   // of its exchanges that bear on it most.
   async searchThreads({ query, to = Infinity, limit = 2, live = false }) {

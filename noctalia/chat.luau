@@ -73,6 +73,133 @@ local opened = 0 -- bumped on each open, to start at the newest message
 local render -- defined below; the buttons need to call it
 
 local unfolded = {} -- by message: whether what the Oracle said is showing
+
+-- Earlier conversations, a month at a time. The daemon lays the month out
+-- (its name, the weekday of the 1st, its length, today) and lists each day's
+-- conversations; a day with one opens it, a day with several lists them.
+local calendarOpen = false
+local shown = nil -- { year, month }
+local month = nil -- the daemon's answer for the month shown
+local picked = nil -- the day whose conversations are listed, YYYY-MM-DD
+
+-- With no month shown yet, the daemon gives this one.
+local function fetchMonth()
+  local command = { heyclaude, "days" }
+  if shown then
+    table.insert(command, `{shown.year}-{string.format("%02d", shown.month)}`)
+  end
+  noctalia.runAsync(command, function(result)
+    local reply = noctalia.json.decode(result.stdout or "")
+    if type(reply) == "table" and reply.ok then
+      month = reply
+      local year, number = tostring(reply.key or ""):match("^(%d+)-(%d+)$")
+      if year then
+        shown = { year = tonumber(year), month = tonumber(number) }
+      end
+      render()
+    end
+  end)
+end
+
+local function step(by: number)
+  if not shown then
+    return
+  end
+  local index = shown.year * 12 + (shown.month - 1) + by
+  shown = { year = index // 12, month = index % 12 + 1 }
+  month = nil
+  picked = nil
+  fetchMonth()
+  render()
+end
+
+local function load(id: string)
+  noctalia.state.set("load_request", { id = id, at = noctalia.nowMs() })
+  calendarOpen = false
+  picked = nil
+  render()
+end
+
+local function calendarView()
+  if not month then
+    return { ui.label({ text = "…", color = "on_surface_variant" }) }
+  end
+  local CELL = math.floor((WIDTH - 20 - 6 * 4) / 7)
+  local rows = {
+    ui.row({ align = "center", gap = 6 }, {
+      ui.button({ glyph = "chevron-left", variant = "ghost", controlSize = "sm", tooltip = "The month before", onClick = function() step(-1) end }),
+      ui.spacer({ flexGrow = 1 }),
+      ui.label({ text = month.name or "", color = "on_surface", fontSize = 14, fontWeight = "bold" }),
+      ui.spacer({ flexGrow = 1 }),
+      ui.button({ glyph = "chevron-right", variant = "ghost", controlSize = "sm", tooltip = "The month after", onClick = function() step(1) end }),
+    }),
+  }
+  local heads = {}
+  for _, letter in ipairs({ "S", "M", "T", "W", "T", "F", "S" }) do
+    table.insert(heads, ui.row({ width = CELL, justify = "center" }, { ui.label({ text = letter, color = "on_surface_variant", fontSize = 11 }) }))
+  end
+  table.insert(rows, ui.row({ gap = 4 }, heads))
+  local key = month.key or ""
+  local week = {}
+  local function flush()
+    while #week < 7 do
+      table.insert(week, ui.box({ width = CELL, height = 40 }))
+    end
+    table.insert(rows, ui.row({ key = `w{#rows}`, gap = 4 }, week))
+    week = {}
+  end
+  for _ = 1, month.first or 0 do
+    table.insert(week, ui.box({ width = CELL, height = 40 }))
+  end
+  for day = 1, month.length or 30 do
+    local iso = `{key}-{string.format("%02d", day)}`
+    local held = (month.days or {})[iso] or {}
+    local dots = {}
+    for dot = 1, math.min(#held, 4) do
+      table.insert(dots, ui.box({ key = `d{dot}`, width = 5, height = 5, radius = 3, fill = role("primary") }))
+    end
+    local today = iso == month.today
+    local later = iso > (month.today or "")
+    table.insert(week, ui.column({
+      key = `c{day}`, width = CELL, height = 40, radius = 8, align = "center", justify = "center", gap = 3,
+      fill = if picked == iso then tint(role("primary"), 0.22) elseif #held > 0 then tint(role("primary"), 0.06) else nil,
+      border = if today then role("primary") else nil, borderWidth = if today then 1 else nil,
+      tooltip = if #held == 1 then held[1].title elseif #held > 1 then `{#held} conversations` else nil,
+      onClick = if #held > 0 then function()
+        if #held == 1 then
+          load(held[1].id)
+        else
+          picked = if picked == iso then nil else iso
+          render()
+        end
+      end else nil,
+    }, {
+      ui.label({ text = tostring(day), fontSize = 12, color = if #held > 0 then "on_surface" elseif later then "outline" else "on_surface_variant" }),
+      ui.row({ gap = 2, height = 5 }, dots),
+    }))
+    if #week == 7 then
+      flush()
+    end
+  end
+  if #week > 0 then
+    flush()
+  end
+  -- A day with several conversations: each by its time and a few words of what it was about.
+  if picked then
+    table.insert(rows, ui.box({ height = 1, fill = "outline/0.3" }))
+    for index, entry in ipairs((month.days or {})[picked] or {}) do
+      table.insert(rows, ui.row({
+        key = `p{index}`, gap = 10, align = "center", radius = 8, paddingH = 8, paddingV = 5, fill = tint(role("primary"), 0.06),
+        tooltip = `{entry.exchanges} exchange{if entry.exchanges == 1 then "" else "s"}`,
+        onClick = function() load(entry.id) end,
+      }, {
+        ui.row({ width = 64 }, { ui.label({ text = entry.clock or "", color = "on_surface_variant", fontSize = 11 }) }),
+        ui.label({ text = entry.title or "", color = "on_surface", fontSize = 12, maxLines = 2, maxWidth = WIDTH - 130 }),
+      }))
+    end
+  end
+  return rows
+end
 local selecting = nil -- index of the message opened up for selecting text in
 local copied = nil -- index of the message just copied, for a moment's tick
 
@@ -214,18 +341,65 @@ render = function()
 
   local lines = {}
   for index, line in ipairs(noctalia.state.get("log") or {}) do
-    if line.who == "act" or line.who == "note" then
-      -- A step taken on the way to an answer: an icon, what it was, and with what.
-      table.insert(lines, ui.row({
-        key = `n{index}`, gap = 10, align = "center", radius = 10, paddingH = 8, paddingV = 5,
-        fill = tint(role("secondary"), 0.10), border = tint(role("secondary"), 0.28), borderWidth = 1,
+    if line.who == "past" then
+      -- An earlier conversation is showing, from the calendar: what and when,
+      -- the way back, and those it may carry on from or be carried on in.
+      local links = {}
+      for number, entry in ipairs(line.related or {}) do
+        table.insert(links, ui.row({
+          key = `r{number}`, gap = 6, align = "center", radius = 6, paddingH = 4, paddingV = 2,
+          tooltip = `Show {entry.title}`,
+          onClick = function()
+            noctalia.state.set("load_request", { id = entry.id, at = noctalia.nowMs() })
+          end,
+        }, {
+          ui.glyph({ name = if entry.how == "Possibly continues" then "arrow-back-up" else "arrow-forward-up", size = 13, color = role("primary") }),
+          ui.label({ text = `{entry.how} {entry.title} · {entry.when}`, color = role("primary"), fontSize = 11, maxLines = 1, maxWidth = WIDTH - 90 }),
+        }))
+      end
+      table.insert(lines, ui.column({
+        key = `n{index}`, gap = 4, radius = 10, paddingH = 10, paddingV = 6,
+        fill = tint(role("primary"), 0.08), border = tint(role("primary"), 0.45), borderWidth = 1,
       }, {
-        ui.row({ align = "center", justify = "center", width = 26, height = 26, radius = 7, fill = tint(role("secondary"), 0.22) }, {
-          ui.glyph({ name = line.glyph or "tool", size = 15, color = role("secondary") }),
+        ui.row({ gap = 10, align = "center" }, {
+          ui.glyph({ name = "history", size = 16, color = role("primary") }),
+          ui.column({ gap = 0, flexGrow = 1 }, {
+            ui.label({ text = line.text or "", color = "on_surface", fontSize = 12, fontWeight = "bold", maxLines = 2, maxWidth = WIDTH - 170 }),
+            ui.label({ text = line.detail or "", color = "on_surface_variant", fontSize = 11 }),
+          }),
+          ui.button({ text = "Back to now", variant = "secondary", controlSize = "sm", onClick = function()
+            noctalia.state.set("load_request", { id = "recent", at = noctalia.nowMs() })
+          end }),
         }),
-        ui.column({ gap = 0, flexGrow = 1 }, {
-          ui.label({ text = line.text, color = "on_surface", fontSize = 12, fontWeight = "bold", maxLines = 1, maxWidth = WIDTH - 110 }),
-          ui.label({ text = line.detail or "", color = "on_surface_variant", fontSize = 11, maxLines = 2, maxWidth = WIDTH - 110, visible = (line.detail or "") ~= "" }),
+        ui.column({ gap = 0, visible = #links > 0 }, links),
+      }))
+    elseif line.who == "act" or line.who == "note" then
+      -- A step taken on the way to an answer: an icon, what it was, and with
+      -- what. Where there is more (what was read, returned or changed), a
+      -- click opens it underneath.
+      local more = type(line.body) == "string" and line.body ~= ""
+      local key = `a{index}`
+      table.insert(lines, ui.column({ key = `n{index}`, gap = 4 }, {
+        ui.row({
+          gap = 10, align = "center", radius = 10, paddingH = 8, paddingV = 5,
+          fill = tint(role("secondary"), 0.10), border = tint(role("secondary"), 0.28), borderWidth = 1,
+          tooltip = if more then (if unfolded[key] then "Fold away" else "Show what was in it") else nil,
+          onClick = if more then function()
+            unfolded[key] = not unfolded[key]
+            render()
+          end else nil,
+        }, {
+          ui.row({ align = "center", justify = "center", width = 26, height = 26, radius = 7, fill = tint(role("secondary"), 0.22) }, {
+            ui.glyph({ name = line.glyph or "tool", size = 15, color = role("secondary") }),
+          }),
+          ui.column({ gap = 0, flexGrow = 1 }, {
+            ui.label({ text = line.text, color = "on_surface", fontSize = 12, fontWeight = "bold", maxLines = 1, maxWidth = WIDTH - 130 }),
+            ui.label({ text = line.detail or "", color = "on_surface_variant", fontSize = 11, maxLines = 2, maxWidth = WIDTH - 130, visible = (line.detail or "") ~= "" }),
+          }),
+          ui.glyph({ name = if unfolded[key] then "chevron-down" else "chevron-right", size = 14, color = "on_surface_variant", visible = more }),
+        }),
+        ui.column({ visible = more and unfolded[key] == true, padding = 10, radius = 8, fill = "surface", border = tint(role("secondary"), 0.28), borderWidth = 1 }, {
+          ui.markdown({ text = if more then line.body else "", width = WIDTH - 80 }),
         }),
       }))
     else
@@ -323,6 +497,22 @@ render = function()
       end,
     }),
     ui.button({
+      glyph = "calendar",
+      variant = if calendarOpen then "secondary" else "ghost",
+      controlSize = "sm",
+      tooltip = if calendarOpen then "Back to the conversation" else "Earlier conversations, by day",
+      onClick = function()
+        calendarOpen = not calendarOpen
+        if calendarOpen then
+          shown = nil
+          month = nil
+          picked = nil
+          fetchMonth()
+        end
+        render()
+      end,
+    }),
+    ui.button({
       glyph = "settings",
       variant = "ghost",
       controlSize = "sm",
@@ -379,8 +569,9 @@ render = function()
   local body = {
     -- A solid backing under the tinted header, so its text is not read against whatever is behind the window.
     ui.column({ fill = "surface", radius = 12 }, { header }),
-    ui.scroll({
-      gap = 8, padding = 10, flexGrow = 1, radius = 12, fill = "surface_variant",
+    if calendarOpen then ui.scroll({ key = "calendar", gap = 6, padding = 10, flexGrow = 1, radius = 12, fill = "surface_variant" }, calendarView())
+    else ui.scroll({
+      key = "lines", gap = 8, padding = 10, flexGrow = 1, radius = 12, fill = "surface_variant",
       stickToBottom = true, scrollToBottomRev = opened,
     }, lines),
   }
@@ -424,11 +615,31 @@ noctalia.state.watch("partial", render)
 
 function onOpen()
   noctalia.state.set("chat_open", true)
+  calendarOpen = false
   animate()
   draft += 1
   opened += 1
   selecting = nil
   copied = nil
+  render()
+end
+
+-- `noctalia msg plugin jpmoo/morgan:chat all calendar` opens the calendar, and
+-- `... calendar 2` picks the 2nd of the month shown (for a key binding, or a test).
+function onIpc(event, payload)
+  if event ~= "calendar" then
+    return
+  end
+  local day = tonumber(payload or "")
+  if day and month and month.key then
+    picked = `{month.key}-{string.format("%02d", day)}`
+  else
+    calendarOpen = true
+    shown = nil
+    month = nil
+    picked = nil
+    fetchMonth()
+  end
   render()
 end
 

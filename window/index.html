@@ -29,6 +29,32 @@
   header .name { font-weight: 650; }
   header .state { color: var(--dim); font-size: 12.5px; min-width: 11em; }
   header .spacer { flex: 1; }
+  header button.on { background: color-mix(in srgb, var(--accent) 25%, transparent); }
+
+  /* Earlier conversations, a month at a time: a dot for each conversation on a day. */
+  #calendar { position: fixed; top: 54px; right: 14px; width: 300px; z-index: 5; padding: 10px 12px 12px; border-radius: 12px;
+              background: var(--panel); border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line)); box-shadow: 0 10px 30px #0008; }
+  #calendar[hidden], #daylist[hidden] { display: none; }
+  #calendar .month { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+  #calendar .grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; text-align: center; }
+  #weekdays span { font-size: 11px; color: var(--dim); padding: 2px 0; }
+  #days button { padding: 4px 0 3px; border-radius: 8px; display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 12.5px; min-height: 36px; }
+  #days button:disabled { cursor: default; color: var(--dim); background: none; }
+  #days button.later { opacity: .35; }
+  #days button.today { box-shadow: inset 0 0 0 1px var(--accent); }
+  #days button.picked { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+  #days .dots { display: flex; gap: 2px; height: 5px; }
+  #days .dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
+  #daylist { max-height: 260px; overflow-y: auto; margin-top: 8px; border-top: 1px solid var(--line); padding-top: 6px; display: flex; flex-direction: column; gap: 2px; }
+  #daylist .when { font-size: 11px; color: var(--dim); padding: 0 6px 2px; }
+  #daylist button { text-align: left; display: flex; gap: 8px; align-items: baseline; padding: 5px 6px; font-size: 12.5px; }
+  #daylist button small { color: var(--dim); min-width: 4.6em; font-size: 11.5px; }
+  .past { display: flex; align-items: center; gap: 10px; padding: 7px 12px; border-radius: 10px; font-size: 12.5px; color: var(--dim);
+          border: 1px dashed color-mix(in srgb, var(--accent) 45%, var(--line)); }
+  .past b { color: var(--text); font-weight: 650; } .past .spacer { flex: 1; }
+  .related { display: flex; flex-direction: column; gap: 2px; margin-top: -4px; }
+  .related button { text-align: left; display: flex; align-items: baseline; gap: 6px; padding: 4px 10px; font-size: 12.5px; color: var(--accent); }
+  .related button small { color: var(--dim); } .related button .ti { font-size: 14px; align-self: center; }
 
   /* Sound is a waveform; thinking is a light going back and forth. */
   #meter { display: flex; align-items: center; gap: 2px; height: 24px; width: 150px; }
@@ -69,7 +95,14 @@
   .act .icon { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; color: var(--accent); background: color-mix(in srgb, var(--accent) 22%, transparent); }
   .act .icon .ti { font-size: 15px; }
   .act b { font-weight: 650; } .act span { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .act .words { min-width: 0; display: flex; flex-direction: column; }
+  .act .words { min-width: 0; display: flex; flex-direction: column; flex: 1; }
+  details.actfold > summary { list-style: none; cursor: pointer; }
+  details.actfold > summary::-webkit-details-marker { display: none; }
+  details.actfold .act > .ti { color: var(--dim); font-size: 14px; transform: rotate(-90deg); transition: transform .15s; }
+  details.actfold[open] .act > .ti { transform: none; }
+  details.actfold > .body { margin: 4px 0 2px 36px; padding: 8px 12px; border-radius: 8px; font-size: 12.5px; max-height: 320px; overflow: auto;
+         border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--line)); background: var(--panel); }
+  details.actfold > .body > :first-child { margin-top: 0; } details.actfold > .body > :last-child { margin-bottom: 0; }
 
   footer { border-top: 1px solid var(--line); background: var(--panel); padding: 10px 0 12px; }
   #chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
@@ -87,10 +120,18 @@
   <div id="meter"></div>
   <span class="state" id="state"></span>
   <span class="spacer"></span>
+  <button id="history" title="Earlier conversations, by day"><i class="ti" data-icon="calendar"></i></button>
   <button id="settings" title="Settings: memory, voice, listening, files, connections"><i class="ti" data-icon="settings"></i></button>
   <button id="new" title="Start a new conversation"><i class="ti" data-icon="plus"></i></button>
 </header>
 <main id="scroll"><div class="column" id="log"></div></main>
+<div id="calendar" hidden>
+  <div class="month"><button id="prev" title="The month before"><i class="ti" data-icon="chevron-left"></i></button>
+    <b id="monthname"></b><button id="next" title="The month after"><i class="ti" data-icon="chevron-right"></i></button></div>
+  <div class="grid" id="weekdays"></div>
+  <div class="grid" id="days"></div>
+  <div id="daylist" hidden></div>
+</div>
 <footer><div class="column" style="gap:0">
   <div id="chips"></div>
   <div class="composer">
@@ -199,7 +240,8 @@ function message(who, text, oracle, record) {
   return box;
 }
 
-function act(icon, title, detail) { // icon: its name in the shell's font
+let lastTool = null; // the latest tool card, for what the tool returns to be put under
+function act(icon, title, detail, body) { // icon: its name in the shell's font
   const row = el("div", "act");
   const words = el("div", "words");
   words.append(el("b", "", title));
@@ -207,7 +249,19 @@ function act(icon, title, detail) { // icon: its name in the shell's font
   const badge = el("div", "icon");
   badge.append(window.icon(icon));
   row.append(badge, words);
-  add(row);
+  lastTool = null;
+  return add(body ? fold(row, body) : row);
+}
+// A card that opens to show what was read, returned or changed.
+function fold(row, body) {
+  const box = el("details", "actfold");
+  const summary = el("summary");
+  row.append(window.icon("chevron-down"));
+  summary.append(row);
+  const inside = el("div", "body");
+  inside.innerHTML = md.render(body);
+  box.append(summary, inside);
+  return box;
 }
 
 function toolCard(tool, args) {
@@ -250,10 +304,11 @@ function hear(line) {
     case "rated": for (const box of document.querySelectorAll(`#log .msg[data-t="${e.t}"]`)) { box.classList.toggle("hidden", e.vote === "down"); box.classList.toggle("good", e.vote === "up"); } break;
     case "oracle": heldOracle = heldOracle ? `${heldOracle}\n\n${e.text}` : e.text; break;
     case "consult": act("sparkles", "Asked the Oracle", e.question); break;
-    case "tool": act(...toolCard(e.name, e.args)); break;
-    case "recall": act("book", "Read from memory", String(e.topic ?? "")); break;
+    case "tool": lastTool = act(...toolCard(e.name, e.args)); break;
+    case "result": if (lastTool?.isConnected && e.text) { const card = lastTool; const spot = document.createComment(""); card.replaceWith(spot); spot.replaceWith(fold(card, e.text)); lastTool = null; } break;
+    case "recall": act("book", "Read from memory", String(e.topic ?? ""), e.body); break;
     case "look": act(e.source === "camera" ? "camera" : e.source === "clipboard" ? "clipboard" : "device-desktop", `Looked at the ${e.source}`, ""); break;
-    case "memory": act(e.rewritten ? "brain" : "bookmark", e.rewritten ? "Tidied memory" : `Remembered in ${e.topic}`, e.rewritten ? String(e.topic ?? "") : String(e.note ?? "")); break;
+    case "memory": act(e.rewritten ? "brain" : "bookmark", e.rewritten ? "Tidied memory" : `Remembered in ${e.topic}`, e.rewritten ? String(e.topic ?? "") : String(e.note ?? ""), e.body); break;
     case "confirm": {
       const [, title, detail] = toolCard(e.name, e.args);
       if (e.done === undefined) act("hand-stop", `Waiting for your yes: ${title.toLowerCase()}`, detail);
@@ -349,15 +404,134 @@ new QWebChannel(qt.webChannelTransport, (channel) => {
   });
 });
 
-function start() {
-  // The conversation so far, and earlier ones, to scroll back through.
+// Exchanges from the record, with the cards that were shown at the time.
+function replay(items) {
+  for (const item of items) {
+    try {
+      add(message("you", item.user));
+      for (const step of item.steps ?? []) hear(JSON.stringify(step));
+      add(message("morgan", item.morgan, item.oracle ?? "", item));
+    } catch (error) { console.error(error); }
+  }
+}
+
+function recent(done) {
   bridge.call("recent 60", (answer) => {
     let earlier = [];
     try { earlier = JSON.parse(answer).items ?? []; } catch { /* the daemon is not up yet */ }
-    for (const item of earlier) {
-      try { add(message("you", item.user)); add(message("morgan", item.morgan, item.oracle ?? "", item)); } catch (error) { console.error(error); }
-    }
+    $("log").replaceChildren(); writing = null; heldOracle = "";
+    replay(earlier);
     $("scroll").scrollTop = $("scroll").scrollHeight;
+    done?.();
+  });
+}
+
+// ---------------------------------------------------------------- earlier conversations, by day
+
+const DAY = { weekday: "long", month: "long", day: "numeric" };
+const clock = (t) => new Date(t).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+let shownMonth = new Date(); shownMonth.setDate(1);
+let monthDays = {};
+
+function calendar(open) {
+  $("calendar").hidden = !open;
+  $("history").classList.toggle("on", open);
+  if (open) { shownMonth = new Date(); shownMonth.setDate(1); month(); }
+}
+
+function month() {
+  const year = shownMonth.getFullYear(), index = shownMonth.getMonth();
+  $("monthname").textContent = shownMonth.toLocaleDateString([], { month: "long", year: "numeric" });
+  $("daylist").hidden = true;
+  const key = `${year}-${String(index + 1).padStart(2, "0")}`;
+  bridge.call(`days ${key}`, (answer) => {
+    try { monthDays = JSON.parse(answer).days ?? {}; } catch { monthDays = {}; }
+    const grid = $("days");
+    grid.replaceChildren();
+    for (let blank = 0; blank < new Date(year, index, 1).getDay(); blank++) grid.append(el("span"));
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    for (let day = 1; day <= new Date(year, index + 1, 0).getDate(); day++) {
+      const iso = `${key}-${String(day).padStart(2, "0")}`;
+      const held = monthDays[iso] ?? [];
+      const cell = el("button");
+      cell.append(el("span", "", String(day)));
+      const dots = el("span", "dots");
+      for (let dot = 0; dot < Math.min(held.length, 4); dot++) dots.append(el("i"));
+      cell.append(dots);
+      const date = new Date(year, index, day);
+      if (date.getTime() === today.getTime()) cell.classList.add("today");
+      if (date > today) cell.classList.add("later");
+      if (!held.length) cell.disabled = true;
+      else {
+        cell.title = held.length === 1 ? held[0].title : `${held.length} conversations`;
+        cell.onclick = () => {
+          for (const other of grid.querySelectorAll(".picked")) other.classList.remove("picked");
+          if (held.length === 1) return load(held[0]);
+          cell.classList.add("picked");
+          pick(date, held);
+        };
+      }
+      grid.append(cell);
+    }
+  });
+}
+
+// A day with several conversations: each, by its time and a few words of what it was about.
+function pick(date, held) {
+  const list = $("daylist");
+  list.replaceChildren(el("div", "when", date.toLocaleDateString([], DAY)));
+  for (const entry of held) {
+    const row = el("button");
+    row.append(el("small", "", clock(entry.t0)), el("span", "", entry.title));
+    row.title = `${entry.exchanges} exchange${entry.exchanges === 1 ? "" : "s"}`;
+    row.onclick = () => load(entry);
+    list.append(row);
+  }
+  list.hidden = false;
+}
+
+// An earlier conversation in place of the one showing, with a way back.
+function load(entry) {
+  bridge.call(`conversation ${entry.id}`, (answer) => {
+    let found;
+    try { found = JSON.parse(answer); } catch { return; }
+    if (!found.ok) return;
+    calendar(false);
+    $("log").replaceChildren(); writing = null; heldOracle = "";
+    const bar = el("div", "past");
+    bar.append(icon("history"), el("span", "", `${new Date(found.t0).toLocaleDateString([], DAY)}, ${clock(found.t0)} · `));
+    bar.lastChild.append(el("b", "", found.title));
+    const back = el("button", "", "Back to now");
+    back.onclick = () => recent();
+    bar.append(el("span", "spacer"), back);
+    add(bar);
+    // The conversations this one may carry on from, or that may carry it on.
+    const related = [...(found.earlier ?? []).map((entry) => ["Possibly continues", entry]), ...(found.later ?? []).map((entry) => ["Possibly continued in", entry])];
+    if (related.length) {
+      const links = el("div", "related");
+      for (const [how, entry] of related) {
+        const link = el("button");
+        link.append(icon(how.endsWith("in") ? "arrow-forward-up" : "arrow-back-up"), el("small", "", `${how} `), el("b", "", entry.title), el("small", "", ` · ${entry.when}`));
+        link.onclick = () => load(entry);
+        links.append(link);
+      }
+      add(links);
+    }
+    replay(found.items);
+    $("scroll").scrollTop = 0;
+  });
+}
+
+$("history").onclick = () => calendar($("calendar").hidden);
+$("prev").onclick = () => { shownMonth.setMonth(shownMonth.getMonth() - 1); month(); };
+$("next").onclick = () => { shownMonth.setMonth(shownMonth.getMonth() + 1); month(); };
+$("weekdays").append(...["S", "M", "T", "W", "T", "F", "S"].map((letter) => el("span", "", letter)));
+document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !$("calendar").hidden) { calendar(false); event.stopPropagation(); } }, true);
+document.addEventListener("mousedown", (event) => { if (!$("calendar").hidden && !$("calendar").contains(event.target) && !$("history").contains(event.target)) calendar(false); });
+
+function start() {
+  // The conversation so far, and earlier ones, to scroll back through.
+  recent(() => {
     bridge.event.connect(hear);
     // The stream's opening line, which says who this is and what it is doing, may have gone by already.
     bridge.call("status", (status) => { try { const now = JSON.parse(status); hear(JSON.stringify({ type: "state", state: now.state, name: now.name })); } catch { /* not up */ } });
