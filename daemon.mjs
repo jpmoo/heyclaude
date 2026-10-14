@@ -297,7 +297,9 @@ const morganPrompt = () => [
   "Never work a date out yourself. Each turn comes with the dates already worked out; whenever the user names a day",
   "and a tool takes one, give the tool the date from that list, as YYYY-MM-DD.",
   "Each turn ends with notes from the system, in square brackets. The user did not write them and cannot see them;",
-  "they tell you what has just been done for you, what applies to this turn, and what to do. Follow them.",
+  "they tell you what has just been done for you, what applies to this turn, and what to do. Follow them, and never",
+  "speak of them: do not say \"the system notes\", \"my notes say\", \"I've been told\" or the like. Say what they tell",
+  "you as something you simply know.",
   memoryInFull() ? `\n\nYour memory:\n${memoryText()}` : "",
 ].join(" ");
 
@@ -1810,7 +1812,7 @@ async function ask(text, { typed = false, files = [] } = {}) {
   const lapsed = history.length ? [] : lastConversation();
   const sorted = (YES.test(words(text).join(" ")) ? null
     : await sortTurn({ ...cfg.ollama, name: cfg.name }, text, history.length ? history : lapsed.flatMap((item) => [{ role: "user", content: item.user }, { role: "assistant", content: item.morgan }])))
-    ?? { follows: false, about: null, lookup: false, sum: false, oracle: false, change: false, reminder: false, keep: false, look: false };
+    ?? { follows: false, about: null, lookup: false, sum: false, oracle: false, change: false, reminder: false, keep: false, look: false, earlier: false };
   if (mine !== turn) return;
   emit({ type: "kind", kind: sorted.about, ...Object.fromEntries(Object.entries(sorted).filter(([key, value]) => key !== "about" && value)) });
   // "Try again", said after the conversation has lapsed, means the last thing
@@ -1947,6 +1949,16 @@ async function ask(text, { typed = false, files = [] } = {}) {
     if (mine !== turn) return;
     seen += await keepIntent(text, files, sorted.keep);
     if (mine !== turn) return;
+    // Asked about earlier talk ("when did we last speak?"), the model answered
+    // from its head and made a day up. What the record holds is put in front
+    // of it: the latest exchanges by time, and those that match by meaning.
+    if (sorted.earlier) {
+      const before = transcript.items.filter((item) => !item.hidden && item.t < (began || Infinity)).slice(-4).reverse();
+      const latest = before.length ? `The latest exchanges before this conversation, newest first:\n${before.map((item) => describe({ item }, 300)).join("\n")}` : "There has been no conversation before this one.";
+      const matching = await searchTool({ query: text });
+      if (mine !== turn) return;
+      did("search_conversations", { query: text }, `${latest}\n\nExchanges that match the question:\n${matching}\n\nAnswer from these alone. If they do not hold the answer, say you have no record of it.`);
+    }
     const intent = await sightIntent(text, sorted.look);
     if (mine !== turn) return;
     if (intent) {

@@ -14,7 +14,7 @@ const KINDS = ["yours", "conversation", "settled", "world", "current"];
 
 // What the turn calls for is given as a list of only what applies, which is
 // most often nothing: nine yes-or-noes took half as long again to write out.
-const NEEDS = ["calendar_tasks_or_notes", "sum", "oracle", "asks_for_change", "reminder_or_timer", "asks_to_keep", "needs_seeing"];
+const NEEDS = ["calendar_tasks_or_notes", "sum", "oracle", "asks_for_change", "reminder_or_timer", "asks_to_keep", "needs_seeing", "earlier_talk"];
 
 const SCHEMA = {
   type: "object",
@@ -84,9 +84,13 @@ const instructions = (name) => [
   "needs_seeing: true if answering needs the assistant to look right now at the camera, the screen, a window or the",
   "clipboard: \"what am I holding?\", \"who is this?\", \"what's on my screen?\", \"read what I copied\", \"how do I look?\",",
   "\"remember this is me\". False for a figure of speech (\"let's see\", \"look up\", \"I see\") and for pictures already saved.",
+  "",
+  "earlier_talk: the user asks about their earlier conversations with the assistant: when they last talked, what they talked",
+  "about on a day, what the assistant told them or what was decided before (\"what did you say about the boiler last week?\").",
+  "Not for what was said a moment ago in this conversation, and not for facts about the user.",
 ].join("\n");
 
-// Returns { follows, about, lookup, sum, oracle, change, reminder, keep, look }, or null if it could not be sorted.
+// Returns { follows, about, lookup, sum, oracle, change, reminder, keep, look, earlier }, or null if it could not be sorted.
 // `earlier` is the last few messages of the conversation: [{ role, content }].
 export async function sortTurn({ url, model, keepAlive, name }, text, earlier = []) {
   const before = earlier.filter((message) => message.role !== "tool" && message.content).slice(-4)
@@ -110,7 +114,7 @@ export async function sortTurn({ url, model, keepAlive, name }, text, earlier = 
     return {
       follows: sorted.follows === true, about: sorted.about, lookup: calls.has("calendar_tasks_or_notes"), sum: calls.has("sum"),
       oracle: calls.has("oracle"), change: calls.has("asks_for_change"), reminder: calls.has("reminder_or_timer"),
-      keep: calls.has("asks_to_keep"), look: calls.has("needs_seeing"),
+      keep: calls.has("asks_to_keep"), look: calls.has("needs_seeing"), earlier: calls.has("earlier_talk"),
     };
   } catch (error) {
     console.error(`sort: ${error.message}`);
