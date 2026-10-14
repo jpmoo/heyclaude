@@ -1636,5 +1636,60 @@
    "look": false,
    "reminder": false
   }
+ },
+ {
+  "say": "Who is the president of Russia?",
+  "want": {
+   "about": "current",
+   "lookup": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
+  }
+ },
+ {
+  "say": "Who is the prime minister of the UK?",
+  "want": {
+   "about": "current",
+   "lookup": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
+  }
+ },
+ {
+  "say": "Who runs Microsoft?",
+  "want": {
+   "about": "current",
+   "lookup": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
+  }
+ },
+ {
+  "say": "Who is the governor of New Jersey?",
+  "want": {
+   "about": "current",
+   "lookup": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
+  }
+ },
+ {
+  "say": "Who is the current Pope?",
+  "want": {
+   "about": "current",
+   "lookup": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false
+  }
  }
 ]

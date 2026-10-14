@@ -1815,7 +1815,14 @@ async function ask(text, { typed = false, files = [] } = {}) {
   emit({ type: "kind", kind: sorted.about, ...Object.fromEntries(Object.entries(sorted).filter(([key, value]) => key !== "about" && value)) });
   // "Try again", said after the conversation has lapsed, means the last thing
   // talked about; so that conversation is picked back up.
-  if (sorted.follows) {
+  let pickedUp = "";
+  if (sorted.follows && lapsed.length) {
+    // Said so, since the messages themselves carry no time: last night's talk is not a minute ago.
+    const at = new Date(lapsed.at(-1).t);
+    const day = at.toDateString() === new Date().toDateString() ? "today"
+      : at.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+    pickedUp = ` The conversation before this message was picked back up from earlier: it ended at ${at.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })} ${day}.`
+      + " Anything in it that came from a tool or a lookup is how things stood then.";
     for (const item of lapsed) {
       const restored = { role: "user", content: item.user };
       exchangeOf.set(restored, item.t);
@@ -1857,7 +1864,7 @@ async function ask(text, { typed = false, files = [] } = {}) {
     recalled = timely ? [] : hits.filter((hit) => hit.score >= cfg.recallScore && !hit.item.live).slice(0, 3);
     if (mine !== turn) return;
     acted = false;
-    seen = await settleProposal(text);
+    seen = await settleProposal(text) + pickedUp;
     if (struck) seen += " The user has just said that your last answer was wrong. It has been struck from the record: do not repeat it or rely on it.";
     if (mine !== turn) return;
     // Where the user may be asking for a change, the answer is held back
@@ -1906,9 +1913,10 @@ async function ask(text, { typed = false, files = [] } = {}) {
       let answer = "";
       if (kind === "world") {
         // From what the smaller model knows, which takes a couple of seconds.
-        emit({ type: "consult", question: text, quick: true });
         answer = await consultOracle(text, true);
         if (mine !== turn) return;
+        // Shown once it has answered: when it hands the question on, one consultation is shown, not two.
+        if (answer && !/^\W*SEARCH\b/i.test(answer)) emit({ type: "consult", question: text, quick: true });
       }
       if (kind === "current" || /^\W*SEARCH\b/i.test(answer) || !answer) {
         // Looked up, which takes long enough to say so.
@@ -2226,7 +2234,9 @@ function reset() {
   proposals = [];
   history = [];
   interviewing = false;
-  stopOracle();
+  oracles.full.stop(); // each conversation is new to the Oracle too
+  oracles.quick.stop({ unused: false });
+  warmOracle();
   lastActivity = 0;
 }
 
@@ -2278,6 +2288,8 @@ function makeOracle({ label, model, tools, allowed, prompt }) {
   let buffer = "";
   let waiting = null; // { resolve } while a question is out
   let drop = false; // an interrupted question's answer is discarded
+  let warming = null; // settles when the throwaway question has been answered
+  let used = false; // it has been asked something real since it was started
 
   const answer = (text) => {
     const pending = waiting;
@@ -2333,8 +2345,21 @@ function makeOracle({ label, model, tools, allowed, prompt }) {
   }
 
   return {
-    ask(content) {
+    // Started ahead of the first question, and asked something to throw away:
+    // the first question otherwise waits some four seconds longer than the
+    // rest, half of it for the process and half for its first exchange.
+    warm() {
+      if (child) return;
+      start();
+      warming = new Promise((resolve) => {
+        waiting = { resolve };
+        child.stdin.write(JSON.stringify({ type: "user", message: { role: "user", content: "This is only to wake you. Reply with the one word: ready" } }) + "\n");
+      }).then(() => { warming = null; });
+    },
+    async ask(content) {
+      if (warming) await warming;
       if (!child) start();
+      used = true;
       return new Promise((resolve) => {
         waiting = { resolve };
         child.stdin.write(JSON.stringify({ type: "user", message: { role: "user", content } }) + "\n");
@@ -2342,16 +2367,21 @@ function makeOracle({ label, model, tools, allowed, prompt }) {
     },
     // Give up on the question that is out, and tell the model to stop working on it.
     interrupt() {
-      if (!waiting) return;
+      if (!waiting || warming) return;
       const { resolve } = waiting;
       waiting = null;
       drop = true;
       child?.stdin.write(JSON.stringify({ type: "control_request", request_id: randomUUID(), request: { subtype: "interrupt" } }) + "\n");
       resolve("");
     },
-    stop() {
+    // Stopped only if it has anything to forget: one that has merely been
+    // woken is as good as new, and is left ready.
+    stop({ unused = true } = {}) {
+      if (!unused && !used) return;
+      used = false;
       const mine = child;
       child = null;
+      answer(""); // whatever was out is not coming
       mine?.kill("SIGTERM");
     },
   };
@@ -2361,6 +2391,10 @@ const oracles = {
   full: makeOracle({ label: "oracle", model: () => cfg.oracle.model, tools: () => cfg.oracle.tools, allowed: () => cfg.oracle.allowedTools, prompt: () => oraclePrompt() }),
   quick: makeOracle({ label: "quick oracle", model: () => cfg.oracle.quickModel, tools: () => [], allowed: () => [], prompt: () => quickPrompt() }),
 };
+
+// World facts go to the quick one, so it is kept ready whenever the router is on.
+const warmOracle = () => { if (cfg.router) oracles.quick.warm(); };
+warmOracle();
 
 function stopOracle() {
   oracles.full.stop();
