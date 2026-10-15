@@ -78,6 +78,7 @@ local unfolded = {} -- by message: whether what the Oracle said is showing
 -- (its name, the weekday of the 1st, its length, today) and lists each day's
 -- conversations; a day with one opens it, a day with several lists them.
 local calendarOpen = false
+local similarOpen = false -- the list of every other conversation, the most alike first
 local shown = nil -- { year, month }
 local month = nil -- the daemon's answer for the month shown
 local picked = nil -- the day whose conversations are listed, YYYY-MM-DD
@@ -154,9 +155,14 @@ local function calendarView()
   for day = 1, month.length or 30 do
     local iso = `{key}-{string.format("%02d", day)}`
     local held = (month.days or {})[iso] or {}
+    -- A dot for each conversation, up to three; more than that, the number.
     local dots = {}
-    for dot = 1, math.min(#held, 4) do
-      table.insert(dots, ui.box({ key = `d{dot}`, width = 5, height = 5, radius = 3, fill = role("primary") }))
+    if #held > 3 then
+      table.insert(dots, ui.label({ key = "n", text = tostring(#held), color = role("primary"), fontSize = 9, fontWeight = "bold" }))
+    else
+      for dot = 1, #held do
+        table.insert(dots, ui.box({ key = `d{dot}`, width = 5, height = 5, radius = 3, fill = role("primary") }))
+      end
     end
     local today = iso == month.today
     local later = iso > (month.today or "")
@@ -175,7 +181,7 @@ local function calendarView()
       end else nil,
     }, {
       ui.label({ text = tostring(day), fontSize = 12, color = if #held > 0 then "on_surface" elseif later then "outline" else "on_surface_variant" }),
-      ui.row({ gap = 2, height = 5 }, dots),
+      ui.row({ gap = 2, height = 10, align = "center" }, dots),
     }))
     if #week == 7 then
       flush()
@@ -309,8 +315,20 @@ local function send(text: string)
   if text == "" and #files == 0 then
     return
   end
+  local log = noctalia.state.get("log") or {}
   if text == "/new" or text == "/interview" or text == "/stop" then
     noctalia.runAsync({ heyclaude, text:sub(2) })
+  elseif log[1] and log[1].who == "past" and log[1].id then
+    -- Typed into an earlier conversation: it is carried on first, then this goes to it.
+    local carried = text
+    noctalia.runAsync({ heyclaude, "continue", tostring(log[1].id) }, function()
+      if #files > 0 then
+        noctalia.runAsync({ heyclaude, "ask", noctalia.json.encode({ text = carried, files = files }) })
+        noctalia.state.set("attachments", {})
+      else
+        noctalia.runAsync({ heyclaude, "type", carried })
+      end
+    end)
   elseif #files > 0 then
     noctalia.runAsync({ heyclaude, "ask", noctalia.json.encode({ text = text, files = files }) })
     noctalia.state.set("attachments", {})
@@ -341,22 +359,16 @@ render = function()
 
   local lines = {}
   for index, line in ipairs(noctalia.state.get("log") or {}) do
-    if line.who == "past" then
+    if line.who == "divider" then
+      table.insert(lines, ui.row({ key = `n{index}`, gap = 10, align = "center" }, {
+        ui.box({ height = 1, flexGrow = 1, fill = "outline/0.4" }),
+        ui.label({ text = line.text or "", color = "on_surface_variant", fontSize = 10 }),
+        ui.box({ height = 1, flexGrow = 1, fill = "outline/0.4" }),
+      }))
+    elseif line.who == "past" or line.who == "carried" then
       -- An earlier conversation is showing, from the calendar: what and when,
-      -- the way back, and those it may carry on from or be carried on in.
-      local links = {}
-      for number, entry in ipairs(line.related or {}) do
-        table.insert(links, ui.row({
-          key = `r{number}`, gap = 6, align = "center", radius = 6, paddingH = 4, paddingV = 2,
-          tooltip = `Show {entry.title}`,
-          onClick = function()
-            noctalia.state.set("load_request", { id = entry.id, at = noctalia.nowMs() })
-          end,
-        }, {
-          ui.glyph({ name = if entry.how == "Possibly continues" then "arrow-back-up" else "arrow-forward-up", size = 13, color = role("primary") }),
-          ui.label({ text = `{entry.how} {entry.title} · {entry.when}`, color = role("primary"), fontSize = 11, maxLines = 1, maxWidth = WIDTH - 90 }),
-        }))
-      end
+      -- and the way back. Those it may carry on from or be carried on in are
+      -- in the bar at the bottom.
       table.insert(lines, ui.column({
         key = `n{index}`, gap = 4, radius = 10, paddingH = 10, paddingV = 6,
         fill = tint(role("primary"), 0.08), border = tint(role("primary"), 0.45), borderWidth = 1,
@@ -367,11 +379,10 @@ render = function()
             ui.label({ text = line.text or "", color = "on_surface", fontSize = 12, fontWeight = "bold", maxLines = 2, maxWidth = WIDTH - 170 }),
             ui.label({ text = line.detail or "", color = "on_surface_variant", fontSize = 11 }),
           }),
-          ui.button({ text = "Back to now", variant = "secondary", controlSize = "sm", onClick = function()
+          ui.button({ text = "Back to now", variant = "secondary", controlSize = "sm", visible = line.who == "past", onClick = function()
             noctalia.state.set("load_request", { id = "recent", at = noctalia.nowMs() })
           end }),
         }),
-        ui.column({ gap = 0, visible = #links > 0 }, links),
       }))
     elseif line.who == "act" or line.who == "note" then
       -- A step taken on the way to an answer: an icon, what it was, and with
@@ -421,6 +432,13 @@ render = function()
             color = if mine then role("primary") elseif oracle then "tertiary" else role("secondary"),
             fontSize = 10,
             fontWeight = "bold",
+          }),
+          -- When it was said: small, and out of the way.
+          ui.label({
+            text = if line.when and line.when ~= "" then `  {line.when}` else "",
+            color = "on_surface_variant",
+            fontSize = 9,
+            visible = line.when ~= nil and line.when ~= "",
           }),
           table.unpack(tools(index, line.text, if mine then nil else line)),
         }),
@@ -564,17 +582,93 @@ render = function()
     }),
   })
 
+  -- Under an earlier conversation: on the left those it possibly continues,
+  -- on the right those that possibly continue it, and between them every
+  -- other conversation, the most alike first.
+  local log = noctalia.state.get("log") or {}
+  local past = if log[1] and log[1].who == "past" then log[1] else nil
+  if not past then
+    similarOpen = false
+  end
+  local function open(id: string)
+    similarOpen = false
+    noctalia.state.set("load_request", { id = id, at = noctalia.nowMs() })
+  end
+  local nav = nil
+  if past then
+    -- One each way, the nearest in time, so that the bar keeps to one line;
+    -- any others are in the list.
+    local before, after = nil, nil
+    local extra = { earlier = 0, later = 0 }
+    for _, entry in ipairs(past.related or {}) do
+      if entry.how == "Possibly continues" then
+        if before then extra.earlier += 1 end
+        if not before or (entry.t0 or 0) > (before.t0 or 0) then before = entry end
+      else
+        if after then extra.later += 1 end
+        if not after or (entry.t0 or 0) < (after.t0 or 0) then after = entry end
+      end
+    end
+    local MIDDLE = 150
+    local SIDE = math.floor((WIDTH - 36 - MIDDLE) / 2)
+    local function side(entry, earlier: boolean, more: number)
+      if not entry then
+        return ui.row({ width = SIDE, justify = if earlier then "start" else "end" }, {
+          ui.label({ text = if earlier then "Nothing before" else "Nothing after", color = "on_surface_variant", fontSize = 10 }),
+        })
+      end
+      local label = ui.label({ text = entry.title, color = role("primary"), fontSize = 11, maxLines = 1, maxWidth = SIDE - 24 })
+      local arrow = ui.glyph({ name = if earlier then "arrow-left" else "arrow-right", size = 13, color = role("primary") })
+      return ui.row({
+        width = SIDE, gap = 4, align = "center", justify = if earlier then "start" else "end", radius = 6, paddingV = 2,
+        tooltip = `{if earlier then "Possibly continues" else "Possibly continued in"} {entry.title} ({entry.when}){if more > 0 then `, and {more} more in the list` else ""}`,
+        onClick = function() open(entry.id) end,
+      }, if earlier then { arrow, label } else { label, arrow })
+    end
+    nav = ui.row({ gap = 0, align = "center" }, {
+      side(before, true, extra.earlier),
+      ui.row({ width = MIDDLE, justify = "center" }, { ui.button({
+        text = `Similar ({#(past.similar or {})})`, glyph = if similarOpen then "chevron-down" else "list-search",
+        variant = if similarOpen then "secondary" else "outline", controlSize = "sm",
+        tooltip = "Other conversations most like this one, the most alike first",
+        onClick = function()
+          similarOpen = not similarOpen
+          render()
+        end,
+      }) }),
+      side(after, false, extra.later),
+    })
+  end
+  local similar = {}
+  if similarOpen and past then
+    for number, entry in ipairs(past.similar or {}) do
+      table.insert(similar, ui.row({
+        key = `s{number}`, gap = 10, align = "center", radius = 8, paddingH = 8, paddingV = 5, fill = tint(role("primary"), 0.06),
+        onClick = function() open(entry.id) end,
+      }, {
+        ui.row({ width = 34 }, { ui.label({ text = string.format("%.2f", entry.score or 0), color = role("primary"), fontSize = 11 }) }),
+        ui.label({ text = entry.title or "", color = "on_surface", fontSize = 12, maxLines = 2, maxWidth = WIDTH - 230 }),
+        ui.spacer({ flexGrow = 1 }),
+        ui.label({ text = entry.when or "", color = "on_surface_variant", fontSize = 10 }),
+      }))
+    end
+  end
+
   -- The list is the only thing here that stretches: anything else that could
   -- (a placeholder spacer, once) takes half the spare height from it.
   local body = {
     -- A solid backing under the tinted header, so its text is not read against whatever is behind the window.
     ui.column({ fill = "surface", radius = 12 }, { header }),
     if calendarOpen then ui.scroll({ key = "calendar", gap = 6, padding = 10, flexGrow = 1, radius = 12, fill = "surface_variant" }, calendarView())
+    elseif similarOpen then ui.scroll({ key = "similar", gap = 4, padding = 10, flexGrow = 1, radius = 12, fill = "surface_variant" }, similar)
     else ui.scroll({
       key = "lines", gap = 8, padding = 10, flexGrow = 1, radius = 12, fill = "surface_variant",
       stickToBottom = true, scrollToBottomRev = opened,
     }, lines),
   }
+  if nav then
+    table.insert(body, ui.column({ fill = "surface", radius = 10, paddingH = 8, paddingV = 4 }, { nav }))
+  end
   if #chips > 0 then
     table.insert(body, ui.row({ gap = 6, align = "center" }, chips))
   end
@@ -626,8 +720,17 @@ end
 
 -- `noctalia msg plugin jpmoo/morgan:chat all calendar` opens the calendar, and
 -- `... calendar 2` picks the 2nd of the month shown (for a key binding, or a test).
+-- `... conversation <id>` shows that conversation, and `... similar` opens or
+-- closes the list of those most like it.
 function onIpc(event, payload)
-  if event ~= "calendar" then
+  if event == "conversation" and payload then
+    noctalia.state.set("load_request", { id = tostring(payload), at = noctalia.nowMs() })
+    return
+  elseif event == "similar" then
+    similarOpen = not similarOpen
+    render()
+    return
+  elseif event ~= "calendar" then
     return
   end
   local day = tonumber(payload or "")

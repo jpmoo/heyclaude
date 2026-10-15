@@ -31,7 +31,7 @@ export function createAdmin(d) {
       oracleModel: d.cfg.oracle.model,
       wakeWord: d.cfg.wakeWord, interruptWord: d.interruptWord(), followUpSeconds: d.cfg.followUpSeconds,
       endSilenceMs: d.cfg.endSilenceMs, hotkey: d.cfg.hotkey, sight: d.cfg.sight, folders: d.cfg.folders,
-      knownVoicesOnly: d.cfg.knownVoicesOnly, voiceThreshold: d.cfg.voiceThreshold,
+      knownVoicesOnly: d.cfg.knownVoicesOnly, voiceThreshold: d.cfg.voiceThreshold, similarFloor: d.cfg.similarFloor,
     }),
 
     // values: { "ollama.url": "...", followUpSeconds: 4 }. null goes back to the default.
@@ -53,6 +53,13 @@ export function createAdmin(d) {
     },
 
     // ------------------------------------------------------------ memory
+    // ------------------------------------------------------------ the log
+    "log.recent": ({ count = 200 } = {}) => ({
+      lines: d.logLines.slice(-Math.min(Number(count) || 200, 500)).map((line) => ({
+        ...line, at: new Date(line.t).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit" }),
+      })),
+    }),
+
     "memory.list": () => ({
       topics: d.topics().map((topic) => ({ name: topic.name, description: topic.description, notes: topic.notes })),
       documents: d.documents().map((kept) => ({ title: kept.title, source: kept.source, t: kept.t, size: kept.text.length })),

@@ -45,6 +45,7 @@
   #days button.picked { background: color-mix(in srgb, var(--accent) 22%, transparent); }
   #days .dots { display: flex; gap: 2px; height: 5px; }
   #days .dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
+  #days .dots b { font-size: 9.5px; line-height: 5px; color: var(--accent); font-weight: 650; }
   #daylist { max-height: 260px; overflow-y: auto; margin-top: 8px; border-top: 1px solid var(--line); padding-top: 6px; display: flex; flex-direction: column; gap: 2px; }
   #daylist .when { font-size: 11px; color: var(--dim); padding: 0 6px 2px; }
   #daylist button { text-align: left; display: flex; gap: 8px; align-items: baseline; padding: 5px 6px; font-size: 12.5px; }
@@ -52,9 +53,25 @@
   .past { display: flex; align-items: center; gap: 10px; padding: 7px 12px; border-radius: 10px; font-size: 12.5px; color: var(--dim);
           border: 1px dashed color-mix(in srgb, var(--accent) 45%, var(--line)); }
   .past b { color: var(--text); font-weight: 650; } .past .spacer { flex: 1; }
-  .related { display: flex; flex-direction: column; gap: 2px; margin-top: -4px; }
-  .related button { text-align: left; display: flex; align-items: baseline; gap: 6px; padding: 4px 10px; font-size: 12.5px; color: var(--accent); }
-  .related button small { color: var(--dim); } .related button .ti { font-size: 14px; align-self: center; }
+  .past.carried { border-style: solid; }
+  .divider { display: flex; align-items: center; gap: 10px; color: var(--dim); font-size: 11px; }
+  .divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+  /* Under an earlier conversation: those it possibly continues, those that possibly continue it, and the rest by likeness. */
+  #nav { display: grid; grid-template-columns: 1fr auto 1fr; gap: 8px; align-items: center; margin-bottom: 8px; }
+  #nav[hidden], #similar[hidden] { display: none; }
+  #nav .side { display: flex; min-width: 0; }
+  #nav .side.after { justify-content: flex-end; }
+  #nav .side button { display: flex; align-items: center; gap: 6px; max-width: 100%; padding: 4px 8px; font-size: 12px; color: var(--accent); }
+  #nav .side button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #nav .side small { color: var(--dim); font-size: 11px; padding: 0 8px; }
+  #nav .middle { position: relative; }
+  #alike { display: flex; align-items: center; gap: 4px; font-size: 12px; border: 1px solid var(--line); white-space: nowrap; }
+  #alike .ti { font-size: 14px; }
+  #similar { position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%); width: 440px; max-height: 360px; overflow-y: auto; z-index: 5;
+             padding: 6px; border-radius: 12px; background: var(--panel); border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line)); box-shadow: 0 10px 30px #0008; }
+  #similar button { width: 100%; text-align: left; display: grid; grid-template-columns: 2.6em 1fr auto; gap: 8px; align-items: baseline; padding: 5px 8px; font-size: 12.5px; }
+  #similar button .score { color: var(--accent); font-variant-numeric: tabular-nums; font-size: 11.5px; }
+  #similar button small { color: var(--dim); font-size: 11px; white-space: nowrap; }
 
   /* Sound is a waveform; thinking is a light going back and forth. */
   #meter { display: flex; align-items: center; gap: 2px; height: 24px; width: 150px; }
@@ -68,6 +85,7 @@
   .msg.writing { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
   .who { font-size: 11px; font-weight: 650; color: var(--dim); display: flex; }
   .msg.you .who { color: var(--accent); }
+  .who .time { font-weight: 400; color: var(--dim); opacity: .75; margin-left: 8px; font-size: 10.5px; }
   .who button { padding: 1px 5px; color: var(--dim); } .who button .ti { font-size: 15px; }
   details.oracle summary .ti { font-size: 14px; vertical-align: -2px; margin-right: 4px; }
   .who button:first-of-type { margin-left: auto; }
@@ -133,6 +151,12 @@
   <div id="daylist" hidden></div>
 </div>
 <footer><div class="column" style="gap:0">
+  <div id="nav" hidden>
+    <div class="side" id="before"></div>
+    <div class="middle"><button id="alike" title="Other conversations most like this one, the most alike first"><i class="ti" data-icon="list-search"></i> <span id="alikecount">Similar</span> <i class="ti" data-icon="chevron-up"></i></button>
+      <div id="similar" hidden></div></div>
+    <div class="side after" id="after"></div>
+  </div>
   <div id="chips"></div>
   <div class="composer">
     <button id="attach" title="Attach files (or drop them on the window)"><i class="ti" data-icon="paperclip"></i></button>
@@ -213,9 +237,18 @@ function review(box, t, notes) {
   box.append(card);
 }
 
-function message(who, text, oracle, record) {
+// When something was said: the time today, the date and time before.
+function stamp(t) {
+  const at = new Date(t);
+  const time = at.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  if (at.toDateString() === new Date().toDateString()) return time;
+  return `${at.toLocaleDateString([], { month: "short", day: "numeric", ...(at.getFullYear() === new Date().getFullYear() ? {} : { year: "numeric" }) })}, ${time}`;
+}
+
+function message(who, text, oracle, record, at) {
   const box = el("div", `msg ${who}`);
   const head = el("div", "who", who === "you" ? "You" : name);
+  if (at) { const time = el("span", "time", stamp(at)); time.title = new Date(at).toLocaleString(); head.append(time); }
   const copy = el("button", "copy");
   copy.title = "Copy this message";
   copy.append(icon("copy"));
@@ -289,7 +322,7 @@ function hear(line) {
       break;
     case "level": levels.push(e.value); levels.shift(); break;
     case "user":
-      if (mine) mine = false; else add(message("you", e.text));
+      if (mine) mine = false; else add(message("you", e.text, "", null, e.at));
       break;
     case "partial":
       if (!writing) writing = add(message("morgan writing", ""));
@@ -297,7 +330,7 @@ function hear(line) {
       break;
     case "assistant":
       writing?.remove(); writing = null;
-      add(message("morgan", e.text, heldOracle)); heldOracle = "";
+      add(message("morgan", e.text, heldOracle, null, e.at)); heldOracle = "";
       break;
     case "filed": { const answers = document.querySelectorAll("#log .msg.morgan:not(.writing)"); if (answers.length) marks(answers[answers.length - 1], e.t); break; }
     case "review": for (const box of document.querySelectorAll(`#log .msg[data-t="${e.t}"]`)) review(box, e.t, e.notes); break;
@@ -317,7 +350,16 @@ function hear(line) {
     }
     case "reminder": act(e.set ? "bell" : "bell-ringing", e.set ? (e.text ? `Reminder set: ${e.text}` : "Timer set") : "Reminder", e.set ? String(e.when ?? "") : String(e.text ?? "")); break;
     case "error": act("alert-triangle", "Something went wrong", e.message); break;
-    case "new": $("log").replaceChildren(); writing = null; heldOracle = ""; break;
+    case "continuing": {
+      // The earlier conversation showing is carried on: no way "back", and a line where today begins.
+      $("nav").hidden = true; viewing = null;
+      const bar = $("log").querySelector(".past");
+      bar?.querySelector("button")?.remove();
+      bar?.classList.add("carried");
+      add(el("div", "divider", "Carried on today"));
+      break;
+    }
+    case "new": viewing = null; $("nav").hidden = true; $("log").replaceChildren(); writing = null; heldOracle = ""; break;
   }
 }
 
@@ -369,9 +411,15 @@ function send() {
   const text = $("draft").value.trim();
   if (!text && !files.length) return;
   if (["/new", "/interview", "/stop"].includes(text)) bridge.call(text.slice(1));
-  else {
+  else if (viewing) {
+    // Typed into an earlier conversation: it is carried on first, then this goes to it.
+    const id = viewing;
+    viewing = null;
+    bridge.call(`continue ${id}`, () => { $("draft").value = text; send(); });
+    return;
+  } else {
     mine = true;
-    add(message("you", files.length ? `${text}\n\n${files.map((path) => `📎 ${path.split("/").pop()}`).join("\n")}` : text));
+    add(message("you", files.length ? `${text}\n\n${files.map((path) => `📎 ${path.split("/").pop()}`).join("\n")}` : text, "", null, Date.now()));
     $("scroll").scrollTop = $("scroll").scrollHeight;
     bridge.call(files.length ? `ask ${JSON.stringify({ text, files })}` : `type ${text.replace(/\n+/g, " ")}`);
   }
@@ -408,14 +456,49 @@ new QWebChannel(qt.webChannelTransport, (channel) => {
 function replay(items) {
   for (const item of items) {
     try {
-      add(message("you", item.user));
+      add(message("you", item.user, "", null, item.asked ?? item.t));
       for (const step of item.steps ?? []) hear(JSON.stringify(step));
-      add(message("morgan", item.morgan, item.oracle ?? "", item));
+      add(message("morgan", item.morgan, item.oracle ?? "", item, item.t));
     } catch (error) { console.error(error); }
   }
 }
 
+// The bar under an earlier conversation: on the left those it possibly
+// continues, on the right those that possibly continue it, and between them a
+// list of every other conversation, the most alike first.
+function navigate(found) {
+  // One each way, the nearest in time, to keep to one line; any others are in the list.
+  const side = (box, list, earlier) => {
+    box.replaceChildren();
+    const entry = [...list].sort((a, b) => (earlier ? b.t0 - a.t0 : a.t0 - b.t0))[0];
+    if (!entry) { box.append(el("small", "", earlier ? "Nothing before" : "Nothing after")); return; }
+    const link = el("button");
+    link.title = `${earlier ? "Possibly continues" : "Possibly continued in"} ${entry.title} (${entry.when})${list.length > 1 ? `, and ${list.length - 1} more in the list` : ""}`;
+    if (earlier) link.append(icon("arrow-left"), el("span", "", entry.title)); else link.append(el("span", "", entry.title), icon("arrow-right"));
+    link.onclick = () => load(entry);
+    box.append(link);
+  };
+  side($("before"), found.earlier ?? [], true);
+  side($("after"), found.later ?? [], false);
+  $("alikecount").textContent = `Similar (${(found.similar ?? []).length})`;
+  const list = $("similar");
+  list.replaceChildren();
+  for (const entry of found.similar ?? []) {
+    const row = el("button");
+    row.append(el("span", "score", entry.score.toFixed(2)), el("span", "", entry.title), el("small", "", entry.when));
+    row.onclick = () => { list.hidden = true; load(entry); };
+    list.append(row);
+  }
+  list.hidden = true;
+  $("alike").disabled = !(found.similar ?? []).length;
+  $("nav").hidden = false;
+}
+$("alike").onclick = () => { $("similar").hidden = !$("similar").hidden; };
+document.addEventListener("mousedown", (event) => { if (!$("similar").hidden && !$("nav").querySelector(".middle").contains(event.target)) $("similar").hidden = true; });
+
 function recent(done) {
+  $("nav").hidden = true;
+  viewing = null;
   bridge.call("recent 60", (answer) => {
     let earlier = [];
     try { earlier = JSON.parse(answer).items ?? []; } catch { /* the daemon is not up yet */ }
@@ -455,8 +538,10 @@ function month() {
       const held = monthDays[iso] ?? [];
       const cell = el("button");
       cell.append(el("span", "", String(day)));
+      // A dot for each conversation, up to three; more than that, the number.
       const dots = el("span", "dots");
-      for (let dot = 0; dot < Math.min(held.length, 4); dot++) dots.append(el("i"));
+      if (held.length > 3) dots.append(el("b", "", String(held.length)));
+      else for (let dot = 0; dot < held.length; dot++) dots.append(el("i"));
       cell.append(dots);
       const date = new Date(year, index, day);
       if (date.getTime() === today.getTime()) cell.classList.add("today");
@@ -490,6 +575,8 @@ function pick(date, held) {
   list.hidden = false;
 }
 
+let viewing = null; // the earlier conversation showing, if one is: typing into it carries it on
+
 // An earlier conversation in place of the one showing, with a way back.
 function load(entry) {
   bridge.call(`conversation ${entry.id}`, (answer) => {
@@ -497,6 +584,7 @@ function load(entry) {
     try { found = JSON.parse(answer); } catch { return; }
     if (!found.ok) return;
     calendar(false);
+    viewing = found.id;
     $("log").replaceChildren(); writing = null; heldOracle = "";
     const bar = el("div", "past");
     bar.append(icon("history"), el("span", "", `${new Date(found.t0).toLocaleDateString([], DAY)}, ${clock(found.t0)} · `));
@@ -505,18 +593,7 @@ function load(entry) {
     back.onclick = () => recent();
     bar.append(el("span", "spacer"), back);
     add(bar);
-    // The conversations this one may carry on from, or that may carry it on.
-    const related = [...(found.earlier ?? []).map((entry) => ["Possibly continues", entry]), ...(found.later ?? []).map((entry) => ["Possibly continued in", entry])];
-    if (related.length) {
-      const links = el("div", "related");
-      for (const [how, entry] of related) {
-        const link = el("button");
-        link.append(icon(how.endsWith("in") ? "arrow-forward-up" : "arrow-back-up"), el("small", "", `${how} `), el("b", "", entry.title), el("small", "", ` · ${entry.when}`));
-        link.onclick = () => load(entry);
-        links.append(link);
-      }
-      add(links);
-    }
+    navigate(found);
     replay(found.items);
     $("scroll").scrollTop = 0;
   });

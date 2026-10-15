@@ -1874,5 +1874,148 @@
    "look": false,
    "source": "self"
   }
+ },
+ {
+  "say": "And does grade 6 have the same rules?",
+  "after": [
+   {
+    "role": "user",
+    "content": "Back to middle schools schedule, assuming the secondary model. What are the requirements?"
+   },
+   {
+    "role": "assistant",
+    "content": "Let me check if there are any saved documents about this in your files or memory. Let me pull those up, along with checking your projects for any related documents. Here's what the Oracle pulled together for middle school scheduling requirements under a secondary model in New York: no strict period length requirement; the school day is at least 5.5 hours for grades 7 and 8."
+   }
+  ],
+  "want": {
+   "source": "oracle",
+   "lookup": false,
+   "follows": true
+  }
+ },
+ {
+  "say": "What about for high school?",
+  "after": [
+   {
+    "role": "user",
+    "content": "Back to middle schools schedule, assuming the secondary model. What are the requirements?"
+   },
+   {
+    "role": "assistant",
+    "content": "Let me check if there are any saved documents about this in your files or memory. Let me pull those up, along with checking your projects for any related documents. Here's what the Oracle pulled together for middle school scheduling requirements under a secondary model in New York: no strict period length requirement; the school day is at least 5.5 hours for grades 7 and 8."
+   }
+  ],
+  "want": {
+   "source": "oracle",
+   "lookup": false,
+   "follows": true
+  }
+ },
+ {
+  "say": "Is that the same in New Jersey?",
+  "after": [
+   {
+    "role": "user",
+    "content": "Back to middle schools schedule, assuming the secondary model. What are the requirements?"
+   },
+   {
+    "role": "assistant",
+    "content": "Let me check if there are any saved documents about this in your files or memory. Let me pull those up, along with checking your projects for any related documents. Here's what the Oracle pulled together for middle school scheduling requirements under a secondary model in New York: no strict period length requirement; the school day is at least 5.5 hours for grades 7 and 8."
+   }
+  ],
+  "want": {
+   "source": "oracle",
+   "lookup": false,
+   "follows": true
+  }
+ },
+ {
+  "say": "Why is that?",
+  "after": [
+   {
+    "role": "user",
+    "content": "Back to middle schools schedule, assuming the secondary model. What are the requirements?"
+   },
+   {
+    "role": "assistant",
+    "content": "Let me check if there are any saved documents about this in your files or memory. Let me pull those up, along with checking your projects for any related documents. Here's what the Oracle pulled together for middle school scheduling requirements under a secondary model in New York: no strict period length requirement; the school day is at least 5.5 hours for grades 7 and 8."
+   }
+  ],
+  "want": {
+   "source": "oracle",
+   "lookup": false,
+   "follows": true
+  }
+ },
+ {
+  "say": "And how long has that been the rule?",
+  "after": [
+   {
+    "role": "user",
+    "content": "Back to middle schools schedule, assuming the secondary model. What are the requirements?"
+   },
+   {
+    "role": "assistant",
+    "content": "Let me check if there are any saved documents about this in your files or memory. Let me pull those up, along with checking your projects for any related documents. Here's what the Oracle pulled together for middle school scheduling requirements under a secondary model in New York: no strict period length requirement; the school day is at least 5.5 hours for grades 7 and 8."
+   }
+  ],
+  "want": {
+   "source": "oracle",
+   "lookup": false,
+   "follows": true
+  }
+ },
+ {
+  "say": "Has he won an Oscar?",
+  "after": [
+   {
+    "role": "user",
+    "content": "Who directed Arrival?"
+   },
+   {
+    "role": "assistant",
+    "content": "I'll look that up. The Oracle says Denis Villeneuve directed Arrival, in 2016."
+   }
+  ],
+  "want": {
+   "source": "oracle",
+   "lookup": false,
+   "follows": true
+  }
+ },
+ {
+  "say": "And on Friday?",
+  "after": [
+   {
+    "role": "user",
+    "content": "What's on my calendar tomorrow?"
+   },
+   {
+    "role": "assistant",
+    "content": "Let me check your calendar. Tomorrow, Wednesday the 14th, you have an admin meeting at 8:15 and a curriculum committee at 11."
+   }
+  ],
+  "want": {
+   "source": "self",
+   "lookup": true,
+   "follows": true
+  }
+ },
+ {
+  "say": "Move the 11 o'clock to Thursday.",
+  "after": [
+   {
+    "role": "user",
+    "content": "What's on my calendar tomorrow?"
+   },
+   {
+    "role": "assistant",
+    "content": "Let me check your calendar. Tomorrow, Wednesday the 14th, you have an admin meeting at 8:15 and a curriculum committee at 11."
+   }
+  ],
+  "want": {
+   "source": "self",
+   "change": true
+  }
  }
 ]

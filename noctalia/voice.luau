@@ -70,6 +70,10 @@ local function render()
   local caption = noctalia.state.get("caption") or ""
   local words = {}
   if asked ~= "" then
+    local when = noctalia.state.get("asked_when") or ""
+    if when ~= "" then
+      table.insert(words, ui.label({ key = "when", text = when, color = "on_surface_variant", fontSize = 9 }))
+    end
     table.insert(words, ui.label({ key = "asked", text = asked, color = "on_surface_variant", fontSize = 11, maxWidth = 372 }))
   end
   if answer ~= "" then

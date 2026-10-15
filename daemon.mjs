@@ -31,6 +31,21 @@ const CONFIG_HOME = join(HOME, ".config", "heyclaude");
 const RUNTIME = process.env.XDG_RUNTIME_DIR ?? "/tmp";
 const SOCKET = process.env.HEYCLAUDE_SOCKET ?? join(RUNTIME, "heyclaude.sock");
 const WORKDIR = join(HOME, ".local", "share", "heyclaude", "work");
+// The latest of what Morgan writes to its log, kept as well as written, so that
+// the settings window can show it (`heyclaude log`, or the Log tab).
+const logLines = [];
+for (const level of ["log", "warn", "error"]) {
+  const write = console[level].bind(console);
+  console[level] = (...args) => {
+    const text = args.map((arg) => (typeof arg === "string" ? arg : arg instanceof Error ? arg.stack ?? arg.message : JSON.stringify(arg))).join(" ");
+    // Everything here is written to stderr, news and trouble alike; what reads as trouble is marked so.
+    const trouble = /\b(error|errors|failed|fails|failure|could not|cannot|can't|refused|timed? ?out|timeout|not reachable|unreachable|exception|denied|crash|ECONN\w*|ENOENT|EACCES)\b/i.test(text);
+    logLines.push({ t: Date.now(), level: trouble ? (level === "warn" ? "warn" : "error") : "info", text: text.slice(0, 2000) });
+    if (logLines.length > 500) logLines.shift();
+    write(...args);
+  };
+}
+
 const MEMORY = process.env.HEYCLAUDE_MEMORY ?? join(HOME, ".local", "share", "heyclaude", "memory");
 
 // Where install.sh puts whisper.cpp, Piper and their models.
@@ -158,6 +173,8 @@ const defaults = {
   // configuration file is touched; null leaves the keyboard alone.
   hotkey: BASICS.hotkey,
   recallScore: 0.58,
+  // The list of conversations most like the one being looked at stops at this likeness.
+  similarFloor: 0.7,
   threadScore: 0.55,
 };
 
@@ -175,7 +192,7 @@ if (!("wakeWord" in user)) cfg.wakeWord = `Hey ${cfg.name}`;
 // Settings that are looked at each time they are used take effect as soon as
 // the file is saved, without waiting for the settings menu to be closed and
 // the daemon restarted. (Voices, servers and the microphone still need that.)
-const LIVE = ["knownVoicesOnly", "voiceThreshold", "userName", "folders", "sight", "pronunciations", "style", "followUpSeconds", "endSilenceMs", "recallScore", "consultLine", "wakeReply"];
+const LIVE = ["similarFloor", "knownVoicesOnly", "voiceThreshold", "userName", "folders", "sight", "pronunciations", "style", "followUpSeconds", "endSilenceMs", "recallScore", "consultLine", "wakeReply"];
 watchFile(configPath, { interval: 1000 }, () => {
   try {
     const saved = JSON.parse(readFileSync(configPath, "utf8"));
@@ -1071,8 +1088,20 @@ const watchers = new Set();
 // filed with its exchange so that a view opened later can show them again.
 const STEPS = new Set(["consult", "tool", "result", "recall", "look", "memory", "confirm", "reminder"]);
 let steps = [];
+let askedAt = 0; // when the turn in hand was asked
+
+// When something was said, small and plain: the time today, the date and time before.
+function stamp(t) {
+  const at = new Date(t);
+  const time = at.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  if (at.toDateString() === new Date().toDateString()) return time;
+  const sameYear = at.getFullYear() === new Date().getFullYear();
+  return `${at.toLocaleDateString("en-US", { month: "short", day: "numeric", ...(sameYear ? {} : { year: "numeric" }) })}, ${time}`;
+}
 
 function emit(event) {
+  // What the user and Morgan say carries the moment it was said.
+  if (event.type === "user" || event.type === "assistant") event = { ...event, at: Date.now(), when: stamp(Date.now()) };
   // A reminder going off is not a step in anyone's turn, and is not to go off again when replayed.
   if (STEPS.has(event.type) && !(event.type === "reminder" && !event.set) && steps.length < 40) {
     steps.push(typeof event.body === "string" || typeof event.text === "string"
@@ -1618,9 +1647,34 @@ for (const item of transcript.since(Date.now() - cfg.idleResetMinutes * 60_000))
   unfiled++;
 }
 
+// Messages put back from the record (a lapsed conversation picked up, or an
+// earlier one continued): already filed and learned from, so not again.
+const restored = new WeakSet();
+let continuing = null; // { id, title, t1, told }: the earlier conversation this one carries on
+
+function restore(items) {
+  for (const item of items) {
+    const asked = { role: "user", content: item.user };
+    const answered = { role: "assistant", content: item.morgan };
+    exchangeOf.set(asked, item.t);
+    if (item.live) lookups.add(asked);
+    restored.add(asked);
+    restored.add(answered);
+    history.push(asked, answered);
+  }
+}
+
+// When an earlier conversation ended, as Morgan is told it.
+function endedAt(t) {
+  const at = new Date(t);
+  const day = at.toDateString() === new Date().toDateString() ? "today"
+    : at.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+  return `${at.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })} ${day}`;
+}
+
 // An exchange as the conversation views are given it.
-function shown({ t, user, morgan, oracle, hidden, good, steps: taken }) {
-  return { t, user, morgan, ...(oracle ? { oracle } : {}), ...(taken ? { steps: taken } : {}), hidden: Boolean(hidden), good: Boolean(good), ...(hidden ? { review: notesFrom(t) } : {}) };
+function shown({ t, asked, user, morgan, oracle, hidden, good, steps: taken }) {
+  return { t, asked: asked ?? t, when: stamp(t), askedWhen: stamp(asked ?? t), user, morgan, ...(oracle ? { oracle } : {}), ...(taken ? { steps: taken } : {}), hidden: Boolean(hidden), good: Boolean(good), ...(hidden ? { review: notesFrom(t) } : {}) };
 }
 
 const clockOf = (t) => new Date(t).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
@@ -1710,7 +1764,7 @@ const STRIKE = /^(no[,.]?\s+)?(that(['’]s| is| was) (wrong|incorrect|not right
 // a summary. A conversation is not a thread. One that was never cleared may
 // run from a recipe to a meeting to a timer and back, and what is wanted
 // later is the part about the recipe.
-async function fileThreads(items) {
+async function fileThreads(items, carries = null) {
   if (!items.length) return;
   const numbered = items.map((item, index) => `${index + 1}. User: ${item.user.replace(/\s+/g, " ").slice(0, 500)}\n   ${cfg.name}: ${item.morgan.replace(/\s+/g, " ").slice(0, 400)}`).join("\n");
   let threads = null;
@@ -1762,7 +1816,48 @@ async function fileThreads(items) {
     const members = thread.exchanges.map((number) => items[number - 1]).sort((a, b) => a.t - b.t);
     if (members.length) made.push(await transcript.addThread({ title: String(thread.title).trim(), summary: String(thread.summary).trim(), items: members }));
   }
-  for (const thread of made) await linkThread(thread);
+  await mergeAlike(made);
+  for (const thread of transcript.threads.filter((thread) => made.includes(thread))) await linkThread(thread);
+  // A conversation carried on from an earlier one: its first subject continues
+  // that one for certain, whatever the likeness says.
+  const first = transcript.threads.find((thread) => thread.ts.includes(items[0]?.t));
+  if (carries && first && first.id !== carries && transcript.threads.some((thread) => thread.id === carries)) {
+    transcript.link(first, [...new Set([carries, ...(first.follows ?? [])])].slice(0, 3));
+  }
+}
+
+// The model, cutting a sitting into subjects, sometimes makes two of one
+// ("Querying requirements" and "Preparation for querying", a minute apart).
+// Threads of one sitting that are as alike as linked conversations are made one.
+async function mergeAlike(threads) {
+  const like = (a, b) => { let sum = 0; for (let i = 0; i < a.v.length; i++) sum += a.v[i] * b.v[i]; return sum; };
+  for (;;) {
+    const alive = threads.filter((thread) => thread.v && transcript.threads.includes(thread));
+    let best = null;
+    for (let i = 0; i < alive.length; i++) {
+      for (let j = i + 1; j < alive.length; j++) {
+        const score = like(alive[i], alive[j]);
+        if (score >= LINK_LIKENESS && !lookedUp(alive[i]) && !lookedUp(alive[j]) && (!best || score > best.score)) best = { a: alive[i], b: alive[j], score };
+      }
+    }
+    if (!best) return;
+    const kept = await transcript.merge(best.a, best.b);
+    threads = threads.filter((thread) => thread !== best.a && thread !== best.b).concat(kept);
+  }
+}
+
+// Threads already on the record, a sitting at a time: those whose exchanges
+// fall in one stretch with no lapse between them.
+async function mergeSittings() {
+  const sorted = [...transcript.threads].sort((a, b) => a.t0 - b.t0);
+  let sitting = [];
+  let end = 0;
+  for (const thread of sorted) {
+    if (sitting.length && thread.t0 - end > cfg.idleResetMinutes * 60_000) { if (sitting.length > 1) await mergeAlike(sitting); sitting = []; }
+    sitting.push(thread);
+    end = Math.max(sitting.length > 1 ? end : 0, thread.t1);
+  }
+  if (sitting.length > 1) await mergeAlike(sitting);
 }
 
 // A subject taken up again in a later sitting is kept as a conversation of
@@ -1796,6 +1891,7 @@ async function linkThread(thread) {
 
 // Threads made before they were linked, oldest first, so that each can find those before it.
 async function backfillLinks() {
+  await mergeSittings();
   for (const thread of [...transcript.threads].sort((a, b) => a.t0 - b.t0)) {
     if (!thread.linked) await linkThread(thread);
   }
@@ -1821,7 +1917,7 @@ async function fileAway(turns, from = []) {
   // list is not something to remember, and read back it looks as if it were.
   let lookedUp = false;
   const text = turns
-    .filter((message) => message.role !== "tool" && message.content)
+    .filter((message) => message.role !== "tool" && message.content && !restored.has(message))
     .map((message) => {
       if (message.role === "user") { lookedUp = lookups.has(message); return `User: ${message.content.slice(0, 2000)}`; }
       return lookedUp ? `${cfg.name}: (answered by looking something up; nothing in the answer is to be remembered)` : `${cfg.name}: ${message.content}`;
@@ -1901,6 +1997,7 @@ async function ask(text, { typed = false, files = [] } = {}) {
   // Attached files are read here and handed over with the message. The
   // conversation carries their contents; the transcript keeps only their names.
   const names = files.map((file) => basename(file));
+  askedAt = Date.now();
   emit({ type: "user", text: names.length ? `${text}\n\n${names.map((name) => `📎 ${name}`).join("\n")}` : text });
   setState("thinking");
   // What kind of turn this is, decided once and acted on below. A bare yes is
@@ -1916,17 +2013,15 @@ async function ask(text, { typed = false, files = [] } = {}) {
   let pickedUp = "";
   if (sorted.follows && lapsed.length) {
     // Said so, since the messages themselves carry no time: last night's talk is not a minute ago.
-    const at = new Date(lapsed.at(-1).t);
-    const day = at.toDateString() === new Date().toDateString() ? "today"
-      : at.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
-    pickedUp = ` The conversation before this message was picked back up from earlier: it ended at ${at.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })} ${day}.`
+    pickedUp = ` The conversation before this message was picked back up from earlier: it ended at ${endedAt(lapsed.at(-1).t)}.`
       + " Anything in it that came from a tool or a lookup is how things stood then.";
-    for (const item of lapsed) {
-      const restored = { role: "user", content: item.user };
-      exchangeOf.set(restored, item.t);
-      if (item.live) lookups.add(restored);
-      history.push(restored, { role: "assistant", content: item.morgan });
-    }
+    restore(lapsed);
+  }
+  // An earlier conversation, opened from the calendar and typed into: carried on.
+  if (continuing && !continuing.told) {
+    continuing.told = true;
+    pickedUp += ` The user opened an earlier conversation and is carrying it on: the messages before this one are from it, and it ended at ${endedAt(continuing.t1)}.`
+      + " Anything in it that came from a tool or a lookup is how things stood then.";
   }
   let attached = "";
   for (const file of files) {
@@ -2280,6 +2375,7 @@ async function ask(text, { typed = false, files = [] } = {}) {
       ...(told.length ? { oracle: told.join(" ") } : {}),
       ...(fresh || saw.length || acted ? { live: true } : {}),
       ...(steps.length ? { steps } : {}),
+      ...(askedAt ? { asked: askedAt } : {}),
     });
     steps = [];
   }
@@ -2338,7 +2434,8 @@ async function morgan(mine, onText) {
 
 function reset() {
   if (unfiled && !interviewing) fileAway(history, began ? transcript.since(began).filter((item) => !item.hidden).map((item) => item.t) : []);
-  if (began) fileThreads(transcript.since(began).filter((item) => !item.hidden && !transcript.threads.some((thread) => thread.ts.includes(item.t))));
+  if (began) fileThreads(transcript.since(began).filter((item) => !item.hidden && !transcript.threads.some((thread) => thread.ts.includes(item.t))), continuing?.id);
+  continuing = null;
   unfiled = 0;
   began = 0;
   recalled = [];
@@ -3137,17 +3234,42 @@ function handle(line, socket) {
         first: new Date(from).getDay(), length: new Date(year, month, 0).getDate(), today: isoDay(Date.now()),
       });
     }
+    case "continue": {
+      // continue <id>: carry an earlier conversation on. What is said next is
+      // a new conversation, filed today, with the earlier one in front of Morgan.
+      const found = conversations().find((entry) => entry.id === rest[0]);
+      if (!found) return reply({ ok: false, error: "no such conversation" });
+      stopActive();
+      interrupt();
+      reset();
+      restore(found.items);
+      continuing = { id: found.id, title: found.title, t1: found.items.at(-1).t, told: false };
+      lastActivity = Date.now();
+      emit({ type: "continuing", id: found.id, title: found.title });
+      return reply({ ok: true });
+    }
+    case "log": {
+      // log [n]: the latest lines Morgan has logged, oldest first.
+      const count = Math.min(Number(rest[0]) || 100, logLines.length);
+      return reply({ ok: true, lines: logLines.slice(-count) });
+    }
     case "conversation": {
       // conversation <id>: its exchanges, as recent gives them.
       const found = conversations().find((entry) => entry.id === rest[0]);
       if (!found) return reply({ ok: false, error: "no such conversation" });
       // And the conversations it may carry on from, and those that may carry it on.
-      const brief = (thread) => ({ id: thread.id, title: thread.title, when: `${new Date(thread.t0).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}, ${clockOf(thread.t0)}` });
+      const brief = (thread) => ({ id: thread.id, t0: thread.t0, title: thread.title, when: `${new Date(thread.t0).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}, ${clockOf(thread.t0)}` });
       const own = transcript.threads.find((thread) => thread.id === found.id);
       const earlier = (own?.follows ?? []).map((id) => transcript.threads.find((thread) => thread.id === id)).filter(Boolean).map(brief);
       const later = transcript.threads.filter((thread) => thread.follows?.includes(found.id)).sort((a, b) => a.t0 - b.t0).map(brief);
+      // And every other conversation by likeness to this one, the nearest fifty.
+      const like = (other) => { let sum = 0; for (let i = 0; i < other.v.length; i++) sum += own.v[i] * other.v[i]; return sum; };
+      const similar = own?.v ? transcript.threads.filter((thread) => thread !== own && thread.v)
+        .map((thread) => ({ ...brief(thread), score: Number(like(thread).toFixed(2)) }))
+        .filter((entry) => entry.score >= cfg.similarFloor)
+        .sort((a, b) => b.score - a.score).slice(0, 50) : [];
       return reply({
-        ok: true, id: found.id, t0: found.t0, title: found.title, items: found.items.map(shown), earlier, later,
+        ok: true, id: found.id, t0: found.t0, title: found.title, items: found.items.map(shown), earlier, later, similar,
         when: `${new Date(found.t0).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}, ${clockOf(found.t0)}`,
       });
     }
@@ -3220,7 +3342,7 @@ const admin = createAdmin({
   cfg, defaults, LIVE, interruptWord,
   topics, readTopic, writeTopic, topicPath, slug,
   documents, documentPath, pictures, picturePath,
-  mcpAll, reconnectMcp, enroll, forgetVoice, voicesStatus,
+  mcpAll, reconnectMcp, enroll, forgetVoice, voicesStatus, logLines,
   reminders: {
     list: () => [...due].sort((a, b) => a.at - b.at).map((entry) => ({ ...entry, when: reminders.when(entry.at) })),
     cancel: (id) => { due = due.filter((entry) => entry.id !== id); reminders.save(due); },
@@ -3240,7 +3362,11 @@ const server = createServer((socket) => {
     const newline = buffer.indexOf("\n");
     if (newline < 0) return;
     handled = true;
-    handle(buffer.slice(0, newline), socket);
+    // A command that goes wrong answers with the error; it does not take Morgan down with it.
+    Promise.resolve().then(() => handle(buffer.slice(0, newline), socket)).catch((error) => {
+      console.error(`command: ${error.stack ?? error.message}`);
+      try { socket.end(JSON.stringify({ ok: false, error: error.message }) + "\n"); } catch { /* gone */ }
+    });
   });
   socket.on("close", () => watchers.delete(socket));
   socket.on("error", () => watchers.delete(socket));

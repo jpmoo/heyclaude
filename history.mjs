@@ -105,6 +105,27 @@ export class Transcript {
       .slice(0, limit);
   }
 
+  // Two threads that turned out to be one subject made one: the exchanges of
+  // both, under the title of the larger (or, alike, the earlier), with both
+  // summaries; and whatever pointed at the one dropped now points at the one kept.
+  async merge(keep, drop) {
+    if (drop.ts.length > keep.ts.length) [keep, drop] = [drop, keep];
+    keep.ts = [...new Set([...keep.ts, ...drop.ts])].sort((a, b) => a - b);
+    keep.t0 = Math.min(keep.t0, drop.t0);
+    keep.t1 = Math.max(keep.t1, drop.t1);
+    keep.summary = `${keep.summary} ${drop.summary}`;
+    if (!drop.live) delete keep.live;
+    delete keep.linked;
+    this.threads = this.threads.filter((thread) => thread !== drop);
+    for (const thread of this.threads) {
+      if (thread.follows?.includes(drop.id)) thread.follows = [...new Set(thread.follows.map((id) => (id === drop.id ? keep.id : id)))].filter((id) => id !== thread.id);
+    }
+    const plain = (list) => list.map(({ v, ...rest }) => seal(JSON.stringify(rest))).join("\n") + (list.length ? "\n" : "");
+    writeFileSync(join(this.dir, "threads.sealed"), plain(this.threads), { mode: 0o600 });
+    try { await this.indexThread(keep); } catch (error) { console.error(`history: ${error.message}`); }
+    return keep;
+  }
+
   // Note that a thread may carry on from earlier ones (`follows`, their ids),
   // and that it has been looked at, so it is not looked at again.
   link(thread, follows) {

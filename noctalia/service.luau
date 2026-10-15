@@ -17,8 +17,8 @@ local idleSince = 0
 
 local heldOracle = nil -- what the Oracle said, waiting for the answer it belongs under
 
-local function say(who: string, text: string)
-  table.insert(log, { who = who, text = text })
+local function say(who: string, text: string, when: string?)
+  table.insert(log, { who = who, text = text, when = when })
   while #log > LOG do
     table.remove(log, 1)
   end
@@ -182,13 +182,21 @@ local function onLine(line: string)
     -- The popup shows the whole of the turn: what was asked, then the answer as it is spoken.
     noctalia.state.set("caption", "")
     noctalia.state.set("asked", event.text)
+    noctalia.state.set("asked_when", tostring(event.when or ""))
     noctalia.state.set("answer", "")
-    say("you", event.text)
+    say("you", event.text, event.when)
+  elseif event.type == "continuing" then
+    -- The earlier conversation showing is carried on: no way "back", and a line where today begins.
+    if log[1] and log[1].who == "past" then
+      log[1].who = "carried"
+      table.insert(log, { who = "divider", text = "Carried on today" })
+      noctalia.state.set("log", log)
+    end
   elseif event.type == "partial" then
     noctalia.state.set("partial", event.text)
   elseif event.type == "assistant" then
     noctalia.state.set("partial", "")
-    say("morgan", event.text)
+    say("morgan", event.text, event.when)
     if heldOracle then
       log[#log].oracle = heldOracle
       heldOracle = nil
@@ -253,11 +261,11 @@ noctalia.state.set("partial", "")
 -- replayed through the same handling as live events.
 local function replay(items)
   for _, item in ipairs(items) do
-    table.insert(log, { who = "you", text = item.user })
+    table.insert(log, { who = "you", text = item.user, when = item.askedWhen })
     for _, step in ipairs(if type(item.steps) == "table" then item.steps else {}) do
       onLine(noctalia.json.encode(step))
     end
-    table.insert(log, { who = "morgan", text = item.morgan, t = item.t, hidden = item.hidden, good = item.good, review = item.review, oracle = item.oracle })
+    table.insert(log, { who = "morgan", text = item.morgan, when = item.when, t = item.t, hidden = item.hidden, good = item.good, review = item.review, oracle = item.oracle })
   end
 end
 
@@ -305,12 +313,13 @@ noctalia.state.watch("load_request", function(request)
     end
     local related = {}
     for _, entry in ipairs(if type(reply.earlier) == "table" then reply.earlier else {}) do
-      table.insert(related, { id = entry.id, title = entry.title, when = entry.when, how = "Possibly continues" })
+      table.insert(related, { id = entry.id, t0 = entry.t0, title = entry.title, when = entry.when, how = "Possibly continues" })
     end
     for _, entry in ipairs(if type(reply.later) == "table" then reply.later else {}) do
-      table.insert(related, { id = entry.id, title = entry.title, when = entry.when, how = "Possibly continued in" })
+      table.insert(related, { id = entry.id, t0 = entry.t0, title = entry.title, when = entry.when, how = "Possibly continued in" })
     end
-    log = { { who = "past", text = tostring(reply.title or ""), detail = tostring(reply.when or ""), related = related } }
+    log = { { who = "past", id = reply.id, text = tostring(reply.title or ""), detail = tostring(reply.when or ""), related = related,
+      similar = if type(reply.similar) == "table" then reply.similar else {} } }
     replay(reply.items or {})
     trim()
     noctalia.state.set("log", log)

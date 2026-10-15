@@ -36,6 +36,7 @@ local TABS = {
   { id = "listening", label = "Listening", glyph = "ear" },
   { id = "files", label = "Files", glyph = "folder" },
   { id = "connections", label = "Connections", glyph = "plug" },
+  { id = "log", label = "Log", glyph = "file-text" },
 }
 
 local tab = "memory"
@@ -85,11 +86,12 @@ local function set(values, said: string?)
 end
 
 local NEEDS = {
-  memory = { "memory.list" },
+  memory = { "memory.list", "config.get" },
   voice = { "voice.list", "voices.status", "config.get" },
   listening = { "config.get", "reminders.list" },
   files = { "config.get" },
   connections = { "config.get", "oracle.account", "mcp.list", "ollama.models" },
+  log = { "log.recent" },
 }
 
 refresh = function()
@@ -400,6 +402,14 @@ local function memoryTab()
     table.insert(pictures, hint("None. Say “remember what I look like” or “this is my dog” while the camera can see."))
   end
   table.insert(out, card("Pictures, for recognising people and things", pictures))
+
+  local config = D["config.get"] or {}
+  table.insert(out, card("Earlier conversations", {
+    slider("similar", "How alike a conversation must be to be listed as similar", config.similarFloor or 0.7, 0.5, 0.95, 0.05, function(now)
+      set({ similarFloor = math.floor(now * 100 + 0.5) / 100 })
+    end),
+    hint("For the list under a conversation opened from the calendar. Lower lists more; conversations scoring 0.78 or more are also linked as possibly continuing one another."),
+  }))
   return out
 end
 
@@ -711,6 +721,51 @@ end
 
 -- ---------------------------------------------------------------- connections
 
+-- ---------------------------------------------------------------- log
+
+-- What Morgan has written to its log lately, newest at the bottom: what went
+-- wrong, and what it did. Errors stand out; "Problems only" hides the rest.
+local function logTab()
+  local lines = (D["log.recent"] or {}).lines or {}
+  local shown = {}
+  local copy = {}
+  for index, line in ipairs(lines) do
+    local bad = line.level == "error" or line.level == "warn"
+    if bad or not view.problemsOnly then
+      table.insert(shown, ui.row({ key = `l{index}`, gap = 10, align = "start" }, {
+        ui.row({ width = 76 }, { ui.label({ text = line.at or "", color = "on_surface_variant", fontSize = 10 }) }),
+        ui.label({ text = line.text or "", color = if line.level == "error" then "error" elseif line.level == "warn" then "tertiary" else "on_surface", fontSize = 11, maxWidth = WIDTH - 140 }),
+      }))
+      table.insert(copy, `{line.at}  {line.text}`)
+    end
+  end
+  if #shown == 0 then
+    table.insert(shown, hint(if view.problemsOnly then "Nothing has gone wrong lately." else `{who()} has not logged anything since it started.`))
+  end
+  return {
+    card(`What {who()} has logged lately`, {
+      ui.row({ gap = 8, align = "center" }, {
+        ui.button({ text = "Refresh", glyph = "refresh", variant = "secondary", controlSize = "sm", onClick = function()
+          refresh()
+        end }),
+        ui.button({ text = if view.problemsOnly then "Show everything" else "Problems only", glyph = "alert-triangle", variant = if view.problemsOnly then "secondary" else "ghost", controlSize = "sm", onClick = function()
+          view.problemsOnly = not view.problemsOnly
+          render()
+        end }),
+        ui.button({ text = "Copy", glyph = "copy", variant = "ghost", controlSize = "sm", onClick = function()
+          noctalia.copyToClipboard(table.concat(copy, "\n"), "text/plain")
+          status = "Copied the log."
+          render()
+        end }),
+        ui.spacer({ flexGrow = 1 }),
+        hint("The latest 200 lines since it last started. `heyclaude log -f` follows it in a terminal."),
+      }),
+      ui.separator({ color = "outline/0.3" }),
+      ui.column({ gap = 3 }, shown),
+    }),
+  }
+end
+
 local function connectionsTab()
   local config = D["config.get"] or {}
   local models = D["ollama.models"] or {}
@@ -872,6 +927,8 @@ render = function()
     body = listeningTab()
   elseif tab == "files" then
     body = filesTab()
+  elseif tab == "log" then
+    body = logTab()
   else
     body = connectionsTab()
   end

@@ -32,6 +32,7 @@ if (!args.length || ["help", "-h", "--help"].includes(args[0])) {
     "heyclaude key export | import   write down, or put back, the key that unlocks memory",
     "heyclaude threads               earlier conversations, as the threads they were cut into",
     "heyclaude tools                 the last few tool calls and what came back",
+    "heyclaude log [-f]              what the assistant has logged lately | follow it as it happens",
     "heyclaude admin <json>          what the settings window uses: { op, args }",
   ].join("\n"));
   process.exit(args.length ? 0 : 2);
@@ -99,6 +100,11 @@ if (args[0] === "key") {
     console.error("usage: heyclaude key export | import");
     process.exit(2);
   }
+  process.exit(0);
+}
+
+if (args[0] === "log" && (args[1] === "-f" || args[1] === "--follow")) {
+  spawnSync("journalctl", ["--user", "-u", "heyclaude", "-f", "-n", "50", "-o", "cat"], { stdio: "inherit" });
   process.exit(0);
 }
 
@@ -174,6 +180,17 @@ if (args[0] === "chat") {
     input.prompt();
   });
   input.on("close", () => process.exit(0));
+} else if (args[0] === "log") {
+  // What the assistant has logged lately, oldest first; errors in red.
+  let answer = "";
+  const socket = open(`log ${Number(args[1]) || 100}`);
+  socket.on("data", (chunk) => { answer += chunk; });
+  socket.on("end", () => {
+    for (const line of JSON.parse(answer).lines ?? []) {
+      const colour = line.level === "error" ? "\x1b[31m" : line.level === "warn" ? "\x1b[33m" : "";
+      console.log(`${new Date(line.t).toLocaleTimeString()}  ${colour}${line.text}\x1b[0m`);
+    }
+  });
 } else {
   open(args.join(" ")).pipe(process.stdout);
 }

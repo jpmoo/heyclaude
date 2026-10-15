@@ -35,7 +35,9 @@ const instructions = (name) => [
   "False if it stands on its own.",
   "",
   "about: one of these. For a message that follows, first work out the whole question from what was said before (after talk",
-  "of a film, \"what else has he made?\" is a question about a film director, so world), and sort that.",
+  "of a film, \"what else has he made?\" is a question about a film director, so world; after talk of a state's school",
+  "rules, \"and what about grade 6?\" is a question about those rules, so world), and sort that. Go by what the user is",
+  "asking, not by what the assistant said it would look through.",
   "- yours: the user's own life, people, things, plans, work, files or earlier conversations; an instruction to the assistant",
   "  to remember, set, make, change, add, create, cancel or do something; or about the assistant itself. The user's own tasks,",
   "  calendar, events, meetings, reminders, mail and notes are always yours, whatever day they are about. So is a question",
@@ -93,8 +95,14 @@ const instructions = (name) => [
 // Returns { follows, about, lookup, sum, oracle, change, reminder, keep, look, earlier }, or null if it could not be sorted.
 // `earlier` is the last few messages of the conversation: [{ role, content }].
 export async function sortTurn({ url, model, keepAlive, name }, text, earlier = []) {
+  // The user's words whole, and the gist of each reply: a reply's opening is
+  // often the assistant saying what it will look through ("let me check your
+  // files and projects"), which made a question about the world that followed
+  // it look like one about the user's own records.
+  const gist = (text) => text.replace(/\s+/g, " ").split(/(?<=[.!?])\s+/)
+    .filter((sentence) => !/^(let me|i['’]ll|i will|i['’]m going to|i am going to|i['’]d need to|first,? i)\b/i.test(sentence)).join(" ").slice(0, 300);
   const before = earlier.filter((message) => message.role !== "tool" && message.content).slice(-4)
-    .map((message) => `${message.role === "user" ? "User" : name}: ${message.content.slice(0, 300)}`).join("\n");
+    .map((message) => (message.role === "user" ? `User: ${message.content.slice(0, 500)}` : `${name}: ${gist(message.content)}`)).join("\n");
   try {
     const response = await fetch(`${url}/api/chat`, {
       method: "POST",
@@ -108,7 +116,9 @@ export async function sortTurn({ url, model, keepAlive, name }, text, earlier = 
         ],
       }),
     });
-    const sorted = JSON.parse((await response.json()).message.content);
+    const body = await response.json();
+    if (!body.message) throw new Error(body.error ?? `no answer (HTTP ${response.status})`);
+    const sorted = JSON.parse(body.message.content);
     if (!KINDS.includes(sorted.about)) return null;
     const calls = new Set(sorted.calls_for ?? []);
     return {
