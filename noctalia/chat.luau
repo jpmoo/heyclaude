@@ -155,14 +155,10 @@ local function calendarView()
   for day = 1, month.length or 30 do
     local iso = `{key}-{string.format("%02d", day)}`
     local held = (month.days or {})[iso] or {}
-    -- A dot for each conversation, up to three; more than that, the number.
+    -- How many conversations that day.
     local dots = {}
-    if #held > 3 then
+    if #held > 0 then
       table.insert(dots, ui.label({ key = "n", text = tostring(#held), color = role("primary"), fontSize = 9, fontWeight = "bold" }))
-    else
-      for dot = 1, #held do
-        table.insert(dots, ui.box({ key = `d{dot}`, width = 5, height = 5, radius = 3, fill = role("primary") }))
-      end
     end
     local today = iso == month.today
     local later = iso > (month.today or "")

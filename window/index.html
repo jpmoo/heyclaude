@@ -539,10 +539,9 @@ function month() {
       const held = monthDays[iso] ?? [];
       const cell = el("button");
       cell.append(el("span", "", String(day)));
-      // A dot for each conversation, up to three; more than that, the number.
+      // How many conversations that day.
       const dots = el("span", "dots");
-      if (held.length > 3) dots.append(el("b", "", String(held.length)));
-      else for (let dot = 0; dot < held.length; dot++) dots.append(el("i"));
+      if (held.length) dots.append(el("b", "", String(held.length)));
       cell.append(dots);
       const date = new Date(year, index, day);
       if (date.getTime() === today.getTime()) cell.classList.add("today");
