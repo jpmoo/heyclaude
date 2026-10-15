@@ -1,2 +1,5 @@
 node_modules/
 __pycache__/
+# A server's own: its port, and everything it keeps (memory, transcripts, keys).
+.env
+data/

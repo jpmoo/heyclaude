@@ -1,5 +1,7 @@
 // What the daemon, the command and the settings menu all need to agree on.
 
+import { ROLE, TRIAL } from "./env.mjs"; // first: it settles where things are kept
+
 import { spawnSync } from "node:child_process";
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -120,6 +122,14 @@ let key = null;
 
 export function dataKey() {
   if (key) return key;
+  // On the server, a file only its account can read, put there by `heyclaude key import`.
+  const file = process.env.HEYCLAUDE_KEY_FILE;
+  if (file) {
+    if (!existsSync(file)) throw new Error(`there is no memory key at ${file}: put one there with \`heyclaude key import\``);
+    key = Buffer.from(readFileSync(file, "utf8").trim(), "base64");
+    if (key.length !== 32) throw new Error(`the memory key in ${file} is not the right size`);
+    return key;
+  }
   const script = join(dirname(fileURLToPath(import.meta.url)), "keyring.py");
   const result = spawnSync("python3", [script], { encoding: "utf8" });
   if (result.status !== 0) throw new Error(`the login keyring did not give up the data key: ${result.stderr.trim().split("\n").pop()}`);
@@ -152,6 +162,8 @@ export const readOnly = (tool) => Boolean(tool.annotations?.readOnlyHint);
 export const toolAllowed = (spec, tool) => spec.tools?.[tool.name] ?? (spec.allow === "all" || readOnly(tool));
 
 export function restartDaemon() {
-  if (process.env.HEYCLAUDE_CONFIG) return; // a trial configuration, not the service's
-  spawnSync("systemctl", ["--user", "restart", "heyclaude.service"]);
+  if (TRIAL) return; // a trial configuration, not the service's
+  // On a server it is a system service, as the other apps there are.
+  if (ROLE === "server") spawnSync("sudo", ["systemctl", "restart", "heyclaude.service"], { stdio: "inherit" });
+  else spawnSync("systemctl", ["--user", "restart", "heyclaude.service"]);
 }

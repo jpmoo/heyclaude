@@ -53,6 +53,19 @@ export function createAdmin(d) {
     },
 
     // ------------------------------------------------------------ memory
+    // ------------------------------------------------------------ where Morgan lives
+    // Here, or on a server this machine is a client of. Changing it starts this machine's Morgan again.
+    "client.get": () => d.client.get(),
+    "client.set": ({ server = "", key = "", device = "" } = {}) => {
+      server = String(server).trim();
+      key = String(key).trim();
+      if (server && !key && !d.client.get().hasKey) throw new Error("A server needs a key: run `heyclaude access add <device>` on the server.");
+      if (key && !key.startsWith("hc_")) throw new Error("That is not a key the server issued (they start hc_).");
+      d.client.set({ server, key, device: String(device).trim() });
+      d.restartSoon();
+      return { restart: true };
+    },
+
     // ------------------------------------------------------------ the log
     "log.recent": ({ count = 200 } = {}) => ({
       lines: d.logLines.slice(-Math.min(Number(count) || 200, 500)).map((line) => ({

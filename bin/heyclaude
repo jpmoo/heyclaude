@@ -5,9 +5,9 @@
 // heyclaude voice [name]                                                     (list voices, or switch to one)
 // heyclaude login | logout | account                                         (the Oracle's Claude login)
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { createInterface } from "node:readline";
 import { BASICS, VOICES, fetchVoice, loadConfig, oracleEnv, restartDaemon, saveConfig } from "../lib.mjs";
@@ -33,6 +33,9 @@ if (!args.length || ["help", "-h", "--help"].includes(args[0])) {
     "heyclaude threads               earlier conversations, as the threads they were cut into",
     "heyclaude tools                 the last few tool calls and what came back",
     "heyclaude log [-f]              what the assistant has logged lately | follow it as it happens",
+    "heyclaude connect <server> <key> [device]   make this machine a client of a server (host:port, or https://host/heyclaude)",
+    "heyclaude disconnect            run the whole assistant on this machine again",
+    "heyclaude access add|list|remove [device]   on a server: the keys that let client apps in",
     "heyclaude admin <json>          what the settings window uses: { op, args }",
   ].join("\n"));
   process.exit(args.length ? 0 : 2);
@@ -84,7 +87,18 @@ if (args[0] === "key") {
   // with lives in the login keyring. Written down somewhere safe, it can be
   // put back if the keyring is ever lost.
   const script = new URL("../keyring.py", import.meta.url).pathname;
-  if (args[1] === "export") {
+  const file = process.env.HEYCLAUDE_KEY_FILE; // on the server, a file in place of the keyring
+  if (file && args[1] === "export") {
+    if (!existsSync(file)) { console.error(`heyclaude: there is no key at ${file}`); process.exit(1); }
+    console.log(readFileSync(file, "utf8").trim());
+  } else if (file && args[1] === "import") {
+    console.error(`Paste the key and press Enter. It is kept in ${file}, readable only by this account.`);
+    const line = readFileSync(0, "utf8").split("\n")[0].trim();
+    if (Buffer.from(line, "base64").length !== 32) { console.error("heyclaude: that is not a memory key"); process.exit(1); }
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, line + "\n", { mode: 0o600 });
+    console.error("The key is in place. Restart the service to take it up.");
+  } else if (args[1] === "export") {
     const result = spawnSync("python3", [script, "--no-create"], { encoding: "utf8" });
     if (result.status !== 0) { console.error("heyclaude: there is no key in the login keyring"); process.exit(1); }
     console.error("This one line unlocks everything Morgan remembers. Keep it in a password manager or on paper, not in a file on this laptop.\n");
@@ -105,6 +119,23 @@ if (args[0] === "key") {
 
 if (args[0] === "log" && (args[1] === "-f" || args[1] === "--follow")) {
   spawnSync("journalctl", ["--user", "-u", "heyclaude", "-f", "-n", "50", "-o", "cat"], { stdio: "inherit" });
+  process.exit(0);
+}
+
+if (args[0] === "connect" || args[0] === "disconnect") {
+  // Which server this machine is a client of, kept in client.json; none, and it runs Morgan itself.
+  const { CLIENT_FILE } = await import("../env.mjs");
+  if (args[0] === "connect") {
+    const [, server, key, device] = args;
+    if (!server || !key?.startsWith("hc_")) { console.error("usage: heyclaude connect <host:port | https://host/heyclaude> <key from `heyclaude access add` on the server> [device name]"); process.exit(2); }
+    mkdirSync(dirname(CLIENT_FILE), { recursive: true });
+    writeFileSync(CLIENT_FILE, JSON.stringify({ server, key, ...(device ? { device } : {}) }, null, 2) + "\n", { mode: 0o600 });
+    console.error(`This machine is now a client of ${server}.`);
+  } else {
+    rmSync(CLIENT_FILE, { force: true });
+    console.error("This machine runs the whole assistant itself again.");
+  }
+  restartDaemon();
   process.exit(0);
 }
 
@@ -180,6 +211,22 @@ if (args[0] === "chat") {
     input.prompt();
   });
   input.on("close", () => process.exit(0));
+} else if (args[0] === "access") {
+  // On a server: show a new key plainly, since it is shown only this once.
+  let answer = "";
+  const socket = open(args.join(" "));
+  socket.on("data", (chunk) => { answer += chunk; });
+  socket.on("end", () => {
+    const reply = JSON.parse(answer);
+    if (!reply.ok) { console.error(`heyclaude: ${reply.error}`); process.exitCode = 1; return; }
+    if (reply.key) {
+      console.error(`A key for ${reply.name}. It is shown only now; on that device run:\n`);
+      console.log(`heyclaude connect <this server's address> ${reply.key} ${reply.name}`);
+    } else if (reply.keys) {
+      if (!reply.keys.length) console.log("No keys yet. Make one with: heyclaude access add <device>");
+      for (const key of reply.keys) console.log(`${key.name.padEnd(20)} made ${new Date(key.made).toLocaleDateString()}   last used ${key.used ? new Date(key.used).toLocaleString() : "never"}`);
+    } else console.error("Done.");
+  });
 } else if (args[0] === "log") {
   // What the assistant has logged lately, oldest first; errors in red.
   let answer = "";

@@ -7,12 +7,13 @@
 // back for Morgan to relay. A Unix socket takes commands (toggle, say, stop,
 // new, status, watch) and streams events.
 
+import { ROLE, CLIENT, CLIENT_FILE, MIRROR } from "./env.mjs"; // first: which part this copy plays, and where things are kept
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { connect, createServer } from "node:net";
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, watchFile, writeFileSync } from "node:fs";
-import { basename, extname, resolve } from "node:path";
-import { homedir } from "node:os";
+import { basename, dirname, extname, resolve } from "node:path";
+import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { McpClient } from "./mcp.mjs";
@@ -24,6 +25,7 @@ import { createAdmin } from "./admin.mjs";
 import * as reminders from "./reminders.mjs";
 import { sortTurn } from "./sort.mjs";
 import { calculate } from "./calc.mjs";
+import { createAccess } from "./access.mjs";
 import * as voiceprint from "./speaker.mjs";
 
 const HOME = homedir();
@@ -56,7 +58,7 @@ const PIPER = join(SPEECH, "piper", "piper");
 // At login this can start before the desktop does. Screenshots, the clipboard
 // and the hotkey all need to know which desktop session to talk to, so wait
 // for one to appear and take its details from the sockets it leaves behind.
-for (let waited = 0; waited < 90; waited += 2) {
+for (let waited = 0; ROLE !== "server" && waited < 90; waited += 2) {
   process.env.WAYLAND_DISPLAY ||= readdirSync(RUNTIME).find((name) => /^wayland-\d+$/.test(name)) ?? "";
   const hypr = join(RUNTIME, "hypr");
   if (!process.env.HYPRLAND_INSTANCE_SIGNATURE && existsSync(hypr)) {
@@ -189,6 +191,13 @@ const cfg = {
 // Unless one has been chosen, the wake phrase goes with the name.
 if (!("wakeWord" in user)) cfg.wakeWord = `Hey ${cfg.name}`;
 
+// What this copy does, by its part (see env.mjs). A server has no microphone,
+// speaker, screen or folders of its own: its answers go to the clients as
+// sentences to speak, and looking and reading files wait for clients that can.
+// A client has no brain of its own: it hands turns to the server.
+const DESK = ROLE !== "server";
+const BRAIN = ROLE !== "client";
+
 // Settings that are looked at each time they are used take effect as soon as
 // the file is saved, without waiting for the settings menu to be closed and
 // the daemon restarted. (Voices, servers and the microphone still need that.)
@@ -197,6 +206,7 @@ watchFile(configPath, { interval: 1000 }, () => {
   try {
     const saved = JSON.parse(readFileSync(configPath, "utf8"));
     for (const key of LIVE) cfg[key] = key in saved ? saved[key] : defaults[key];
+    if (ROLE === "server") tellClients({ config: forClients(saved) });
   } catch { /* half-written, or gone: keep what we have */ }
 });
 
@@ -237,7 +247,7 @@ function startKokoro() {
   kokoroHelper.on("exit", () => { kokoroReady = false; kokoroHelper = null; });
   kokoroHelper.on("error", () => { kokoroReady = false; kokoroHelper = null; });
 }
-startKokoro();
+if (DESK) startKokoro();
 
 const morganPrompt = () => [
   `You are ${cfg.name}, a voice assistant on the user's Linux desktop. Everything you write is read aloud by a speech`,
@@ -449,7 +459,7 @@ const SIGHT = {
   camera: { tool: "look_at_camera", what: "photo from the laptop's camera", hint: "look_at_camera shows you what is in front of the laptop, usually them" },
 };
 
-const sightTools = () => cfg.sight.map((source) => ({
+const sightTools = () => (DESK ? cfg.sight : []).map((source) => ({
   type: "function",
   function: {
     name: SIGHT[source].tool,
@@ -602,7 +612,7 @@ async function rememberPicture(args) {
 // saving are done here, before the model is asked for its answer.
 
 async function sightIntent(text, likely) {
-  if (!cfg.sight.length || !likely) return null;
+  if (!DESK || !cfg.sight.length || !likely) return null;
   try {
     const response = await fetch(`${cfg.ollama.url}/api/chat`, {
       method: "POST",
@@ -877,7 +887,7 @@ function fire(entry) {
 }
 
 setInterval(() => {
-  if (state !== "idle" || active) return;
+  if (!BRAIN || state !== "idle" || active) return;
   const entry = due.filter((candidate) => candidate.at <= Date.now()).sort((a, b) => a.at - b.at)[0];
   if (entry) fire(entry);
 }, 1000).unref();
@@ -1025,7 +1035,7 @@ function recallDocument(args) {
   return `${found.title} (kept ${new Date(found.t).toLocaleDateString()}, from ${basename(found.source)}):\n\n${found.text}`;
 }
 
-const fileTools = () => (cfg.folders.length ? [{
+const fileTools = () => (DESK && cfg.folders.length ? [{
   type: "function",
   function: {
     name: "list_folder",
@@ -1631,13 +1641,13 @@ let fresh = false; // this turn's answer drew on something live: a tool, the Ora
 const lookups = new WeakSet(); // the user messages of turns answered from something live
 const exchangeOf = new WeakMap(); // a user message in the conversation -> the exchange it was filed as
 
-seedTopics();
-transcript.reindex();
+if (BRAIN) seedTopics();
+if (BRAIN) transcript.reindex();
 // Not at once: the first thing said after a start should not have to wait behind this.
-setTimeout(() => backfillThreads().then(backfillLinks).catch((error) => console.error(`threads: ${error.message}`)), 30_000).unref();
+if (BRAIN) setTimeout(() => backfillThreads().then(backfillLinks).catch((error) => console.error(`threads: ${error.message}`)), 30_000).unref();
 
 // A conversation interrupted by a restart carries on where it left off.
-for (const item of transcript.since(Date.now() - cfg.idleResetMinutes * 60_000)) {
+for (const item of BRAIN ? transcript.since(Date.now() - cfg.idleResetMinutes * 60_000) : []) {
   if (item.hidden) continue;
   const restored = { role: "user", content: item.user };
   exchangeOf.set(restored, item.t);
@@ -1965,12 +1975,13 @@ let abort = null;
 let lastActivity = 0;
 
 // A typed turn is answered in text only; a spoken one is read aloud.
-async function ask(text, { typed = false, files = [] } = {}) {
+async function ask(text, { typed = false, files = [], attached: given = [] } = {}) {
+  if (ROLE === "client") return askServer(text, { typed, files });
   text = text.trim();
   interrupt();
   quiet = typed;
   if (typed) spokenTurn = false;
-  if (!text && files.length) text = files.length > 1 ? "Here are some files." : "Here is a file.";
+  if (!text && (files.length || given.length)) text = files.length + given.length > 1 ? "Here are some files." : "Here is a file.";
   // "That was wrong": the last answer is struck before anything else happens.
   let struck = false;
   let struckAt = 0;
@@ -1996,7 +2007,7 @@ async function ask(text, { typed = false, files = [] } = {}) {
   began ||= lastActivity;
   // Attached files are read here and handed over with the message. The
   // conversation carries their contents; the transcript keeps only their names.
-  const names = files.map((file) => basename(file));
+  const names = [...files.map((file) => basename(file)), ...given.map((file) => file.name)];
   askedAt = Date.now();
   emit({ type: "user", text: names.length ? `${text}\n\n${names.map((name) => `📎 ${name}`).join("\n")}` : text });
   setState("thinking");
@@ -2029,6 +2040,10 @@ async function ask(text, { typed = false, files = [] } = {}) {
     try { content = await readDocument(home(file), text); } catch (error) { content = `(It could not be read: ${error.message.split("\n")[0]})`; }
     if (mine !== turn) return;
     attached += `\n\n[The user attached the file ${basename(file)}. Its contents:]\n${content}\n[End of ${basename(file)}]`;
+  }
+  // Files a client read on its own machine and sent as they were.
+  for (const file of given) {
+    attached += `\n\n[The user attached the file ${file.name}. Its contents:]\n${file.content}\n[End of ${file.name}]`;
   }
   const asked = { role: "user", content: text + attached };
   history.push(asked);
@@ -2465,6 +2480,13 @@ function did(name, args, result) {
 
 // Abandon whatever is in flight: speech, Morgan's stream, a consultation.
 function interrupt() {
+  if (ROLE === "client") {
+    // What is playing stops here at once; the turn the server has in hand is dropped there.
+    stopSpeech();
+    if (ownSpoken || busy()) remote("interrupt");
+    ownSpoken = false;
+    return;
+  }
   turn++;
   stopSpeech();
   abort?.abort();
@@ -2603,7 +2625,7 @@ const oracles = {
 };
 
 // World facts go to the quick one, so it is kept ready whenever the router is on.
-const warmOracle = () => { if (cfg.router) oracles.quick.warm(); };
+const warmOracle = () => { if (cfg.router && BRAIN) oracles.quick.warm(); };
 warmOracle();
 
 function stopOracle() {
@@ -2652,7 +2674,7 @@ function enqueue(sentence) {
   const clean = sentence.replace(/[*_#`>]+/g, "").replace(/\s+/g, " ").trim();
   if (!clean) return;
   emit({ type: "sentence", text: clean });
-  if (!cfg.tts || quiet) return;
+  if (!cfg.tts || quiet || !DESK) return;
   speakText(clean);
 }
 
@@ -3114,6 +3136,7 @@ function phraseMatch(text, phrase) {
 
 // Wait for the user's turn. `said` is the start of it, already heard.
 function startActive(patience, said = "") {
+  if (!DESK) return; // a server has no microphone; its clients listen
   interrupt();
   openMic();
   resetUtterance();
@@ -3160,7 +3183,29 @@ function transcribe(pcm) {
 function handle(line, socket) {
   const [command, ...rest] = line.trim().split(" ");
   const reply = (object) => socket.end(JSON.stringify(object) + "\n");
+  // A client answers what concerns its own microphone, speaker and voices,
+  // and hands everything else to the server.
+  if (ROLE === "client") {
+    const local = ["toggle", "speak", "watch", "voices", "enroll", "forget-voice"].includes(command)
+      || (command === "admin" && /"op"\s*:\s*"(voices?|client)\./.test(line));
+    if (!local) return clientCommand(command, rest, line, reply);
+  }
   switch (command) {
+    case "access": {
+      // access add <device> | list | remove <device>: the keys that let client apps in.
+      if (ROLE !== "server") return reply({ ok: false, error: "only a server issues access keys" });
+      const [what, name] = rest;
+      try {
+        if (what === "add") return reply({ ok: true, name, key: access.add(name) });
+        if (what === "list") return reply({ ok: true, keys: access.list() });
+        if (what === "remove") {
+          const gone = access.remove(name);
+          for (const [link, device] of links) if (device.name === name) link.close(4003, "key removed");
+          return reply({ ok: gone, ...(gone ? {} : { error: `no key for ${name}` }) });
+        }
+      } catch (error) { return reply({ ok: false, error: error.message }); }
+      return reply({ ok: false, error: "access add <device> | list | remove <device>" });
+    }
     case "toggle":
       // While listening: send what has been said so far, or give up if nothing has.
       if (!active) startActive(cfg.noSpeechSeconds);
@@ -3184,9 +3229,15 @@ function handle(line, socket) {
       let turnOf;
       try { turnOf = JSON.parse(rest.join(" ")); } catch { return reply({ ok: false, error: "ask wants JSON: { text, files }" }); }
       stopActive();
-      ask(String(turnOf.text ?? ""), { typed: true, files: (turnOf.files ?? []).map(String) });
+      const given = (Array.isArray(turnOf.attached) ? turnOf.attached : []).map((file) => ({ name: basename(String(file.name ?? "file")), content: String(file.content ?? "") }));
+      ask(String(turnOf.text ?? ""), { typed: true, files: ROLE === "server" ? [] : (turnOf.files ?? []).map(String), attached: given });
       return reply({ ok: true, state });
     }
+    case "interrupt":
+      // Cut off by a client that heard the user start again: as stop, but nothing is dismissed.
+      interrupt();
+      setState("idle");
+      return reply({ ok: true, state });
     case "stop":
       enrolling = null;
       stopActive();
@@ -3343,12 +3394,23 @@ const admin = createAdmin({
   topics, readTopic, writeTopic, topicPath, slug,
   documents, documentPath, pictures, picturePath,
   mcpAll, reconnectMcp, enroll, forgetVoice, voicesStatus, logLines,
+  // Where this machine's Morgan lives: here, or on a server it is a client of.
+  client: {
+    get: () => ({ role: ROLE, server: CLIENT.server ?? "", device: CLIENT.device ?? hostname(), hasKey: Boolean(CLIENT.key), connected: Boolean(homeLink) }),
+    set({ server, key, device }) {
+      if (!server) { rmSync(CLIENT_FILE, { force: true }); return; }
+      mkdirSync(dirname(CLIENT_FILE), { recursive: true });
+      writeFileSync(CLIENT_FILE, JSON.stringify({ server, key: key || CLIENT.key, device: device || CLIENT.device || hostname() }, null, 2) + "\n", { mode: 0o600 });
+    },
+  },
   reminders: {
     list: () => [...due].sort((a, b) => a.at - b.at).map((entry) => ({ ...entry, when: reminders.when(entry.at) })),
     cancel: (id) => { due = due.filter((entry) => entry.id !== id); reminders.save(due); },
   },
   // Settings the running daemon cannot simply pick up: start again, once the answer has gone.
-  restartSoon: () => setTimeout(() => spawn("systemctl", ["--user", "restart", "heyclaude.service"], { stdio: "ignore", detached: true }).unref(), 400),
+  // A server's service restarts it when it exits (Restart=always).
+  restartSoon: () => setTimeout(() => (ROLE === "server" ? process.exit(0)
+    : spawn("systemctl", ["--user", "restart", "heyclaude.service"], { stdio: "ignore", detached: true }).unref()), 400),
 });
 
 rmSync(SOCKET, { force: true });
@@ -3372,12 +3434,255 @@ const server = createServer((socket) => {
   socket.on("error", () => watchers.delete(socket));
 });
 server.listen(SOCKET, () => console.error(`heyclaude listening on ${SOCKET}`));
-startCanceller();
-startSpotter();
-startVoices();
-// The canceller's microphone takes a moment to appear.
-if (cfg.wakeWord || interruptWord()) setTimeout(openMic, canceller ? 1500 : 0);
-connectMcpServers();
+
+// ---------------------------------------------------------------- clients (on a server)
+//
+// One WebSocket per client app, kept open. The first message is
+// { hello: { key, device, kind, can } }; a key the server issued lets it in,
+// and anything else is refused. After that the client sends
+// { id, command: "type ..." } and gets { id, reply }; and every event Morgan
+// emits goes to every client, as it goes to anything following the local socket.
+
+const access = createAccess(join(process.env.HEYCLAUDE_DATA ?? CONFIG_HOME, "access.json"));
+const links = new Map(); // a client's socket -> { name, kind, can }
+
+// What a client is told of the settings: not the services' addresses and keys.
+const forClients = (saved) => Object.fromEntries(Object.entries(saved).filter(([key]) => !["mcpServers", "oracle", "ollama"].includes(key)));
+function tellClients(message) {
+  const text = JSON.stringify(message);
+  for (const link of links.keys()) if (link.readyState === 1) link.send(text);
+}
+
+// ---------------------------------------------------------------- the server (on a client)
+//
+// A client has the microphone, the speaker and the voices it knows; the server
+// has everything else. What is said here goes there as a turn; what comes back
+// is passed on to whatever follows this client's socket (the plugin, the
+// window), and the answer to a turn spoken here is spoken here.
+
+let homeLink = null; // the open connection to the server, once it has let us in
+const replies = new Map(); // command id -> its resolve
+let nextCommand = 0;
+let ownSpoken = false; // the turn in hand was spoken to this client, so its answer is spoken here
+
+const homeAddress = (address) => {
+  const text = String(address ?? "").trim();
+  if (/^wss?:\/\//.test(text)) return text;
+  if (/^https?:\/\//.test(text)) return text.replace(/^http/, "ws");
+  return `ws://${text}`;
+};
+
+// One command to the server, and its reply; a plain failure when it cannot be reached.
+function remote(command, wait = 45_000) {
+  if (!homeLink) return Promise.resolve({ ok: false, error: "I can't reach the server." });
+  return new Promise((resolve) => {
+    const id = ++nextCommand;
+    const timer = setTimeout(() => { replies.delete(id); resolve({ ok: false, error: "The server took too long to answer." }); }, wait);
+    replies.set(id, (answer) => { clearTimeout(timer); resolve(answer); });
+    homeLink.send(JSON.stringify({ id, command }));
+  });
+}
+
+async function connectHome() {
+  const { WebSocket } = await import("ws");
+  const link = new WebSocket(homeAddress(CLIENT.server), { handshakeTimeout: 8000 });
+  link.on("open", () => link.send(JSON.stringify({ hello: { key: CLIENT.key, device: CLIENT.device ?? hostname(), kind: CLIENT.kind ?? "laptop", can: [] } })));
+  link.on("message", (data) => {
+    let message;
+    try { message = JSON.parse(String(data)); } catch { return; }
+    if (message.welcome) {
+      homeLink = link;
+      console.error(`home: connected to ${CLIENT.server}`);
+      return mirror(message.welcome.config);
+    }
+    if (message.error) return console.error(`home: ${message.error}`);
+    if (message.config) return mirror(message.config);
+    if (message.id !== undefined) {
+      const done = replies.get(message.id);
+      replies.delete(message.id);
+      return done?.(message.reply);
+    }
+    if (message.type) fromHome(message);
+  });
+  link.on("close", (code, reason) => {
+    if (homeLink === link) {
+      homeLink = null;
+      console.error(`home: lost the connection to ${CLIENT.server}`);
+    }
+    for (const done of replies.values()) done({ ok: false, error: "Lost the connection to the server." });
+    replies.clear();
+    if (code === 4003) console.error(`home: the server refused this client's key (${reason}); trying again in a minute`);
+    setTimeout(connectHome, code === 4003 ? 60_000 : 3000);
+  });
+  link.on("error", (error) => console.error(`home: could not reach ${CLIENT.server}: ${error.message}`));
+}
+
+// The server's settings, kept here as the mirror this client starts from.
+// What can change while running does, as the file is watched; anything else
+// (the voice, the wake phrase, the hotkey) needs this client started again.
+function mirror(config) {
+  if (!config) return;
+  const text = JSON.stringify(config, null, 2) + "\n";
+  let before = "";
+  try { before = readFileSync(MIRROR, "utf8"); } catch { /* the first time */ }
+  if (before === text) return;
+  writeFileSync(MIRROR, text, { mode: 0o600 });
+  const fixed = [...new Set([...Object.keys(config), ...Object.keys(user)])]
+    .filter((key) => !LIVE.includes(key) && !["mcpServers", "oracle", "ollama"].includes(key) && JSON.stringify(config[key]) !== JSON.stringify(user[key]));
+  if (configPath !== MIRROR || fixed.length) {
+    console.error(`home: settings changed on the server (${fixed.join(", ") || "first mirror"}); starting again to take them up`);
+    setTimeout(() => process.exit(0), 300);
+  }
+}
+
+// An event from the server, passed on; and the answer to a turn spoken here, spoken.
+function fromHome(event) {
+  switch (event.type) {
+    case "state":
+      quiet = Boolean(event.typed);
+      if (event.state === "idle") {
+        if (ownSpoken) { ownSpoken = false; return finishSpeaking(); }
+        if (!speaking() && !active) setState("idle");
+        return;
+      }
+      if (!speaking()) setState(event.state);
+      return;
+    case "sentence":
+      emit(event);
+      if (ownSpoken && cfg.tts && !quiet) speakText(event.text);
+      return;
+    case "reminder":
+      emit(event);
+      // A reminder going off is said aloud by every client that can speak.
+      if (!event.set && cfg.tts) { ownSpoken = true; spokenTurn = true; quiet = false; }
+      return;
+    case "level":
+      return; // the server has no voice of its own to measure
+    default:
+      emit(event);
+  }
+}
+
+// Files attached here are read here; the server is sent what they hold.
+async function readAttachments(files) {
+  const attached = [];
+  for (const file of files) {
+    let content;
+    try { content = await readDocument(home(file), ""); } catch (error) { content = `(It could not be read: ${error.message.split("\n")[0]})`; }
+    attached.push({ name: basename(file), content });
+  }
+  return attached;
+}
+
+// A turn said or typed here, handed to the server.
+async function askServer(text, { typed = false, files = [] } = {}) {
+  if (!typed) { ownSpoken = true; spokenTurn = true; }
+  const answer = files.length
+    ? await remote(`ask ${JSON.stringify({ text, typed, attached: await readAttachments(files) })}`)
+    : await remote(`${typed ? "type" : "say"} ${text}`);
+  if (answer?.ok === false) cannotReach(answer.error, !typed);
+}
+
+// Said, and shown, when the server cannot be reached: a silent device is worse than one that admits it.
+function cannotReach(error, aloud) {
+  ownSpoken = false;
+  emit({ type: "error", message: error });
+  if (aloud && cfg.tts) {
+    quiet = false;
+    setState("thinking");
+    speakText("I can't reach home right now.");
+    finishSpeaking();
+  } else setState("idle");
+}
+
+// A command from the plugin, the window or the terminal that is the server's to answer.
+async function clientCommand(command, rest, line, reply) {
+  if (command === "stop") {
+    enrolling = null;
+    stopActive();
+    stopSpeech();
+    ownSpoken = false;
+  }
+  if (command === "say") { stopActive(); ownSpoken = true; spokenTurn = true; }
+  if (command === "type") stopActive();
+  if (command === "ask") {
+    stopActive();
+    let turnOf;
+    try { turnOf = JSON.parse(rest.join(" ")); } catch { return reply({ ok: false, error: "ask wants JSON: { text, files }" }); }
+    const attached = await readAttachments((turnOf.files ?? []).map(String));
+    line = `ask ${JSON.stringify({ text: String(turnOf.text ?? ""), attached })}`;
+  }
+  const answer = await remote(line);
+  if (command === "status" && answer?.ok) {
+    // The server's state, with what this client hears and speaks with.
+    Object.assign(answer, { role: "client", server: CLIENT.server, stt: Boolean(cfg.stt), tts: Boolean(cfg.tts), wakeWord: cfg.wakeWord,
+      wakeEngine: spot ? "spotter" : "transcribe", voice: kokoroReady ? cfg.kokoroVoice : cfg.voice, engine: kokoroReady ? "kokoro" : "piper" });
+  }
+  if (answer?.ok === false && ["say", "type", "ask"].includes(command)) cannotReach(answer.error, command === "say");
+  return reply(answer ?? { ok: false, error: "no answer" });
+}
+
+if (ROLE === "client") {
+  if (!CLIENT.key) console.error(`home: ${CLIENT_FILE} names a server but gives no key; ask the server for one with \`heyclaude access add <device>\``);
+  connectHome();
+}
+
+if (ROLE === "server") {
+  const { WebSocketServer } = await import("ws");
+  const port = Number(process.env.PORT);
+  const listener = new WebSocketServer({ port, host: process.env.HOST ?? "0.0.0.0", maxPayload: 32 * 1024 * 1024 });
+  listener.on("listening", () => console.error(`heyclaude serving clients on port ${port}`));
+  listener.on("error", (error) => console.error(`clients: ${error.message}`));
+  listener.on("connection", (link, request) => {
+    const from = request.headers["x-forwarded-for"] ?? request.socket.remoteAddress;
+    let device = null;
+    // Events go out as they are, one per message.
+    const follower = { write: (line) => { if (link.readyState === 1) link.send(line.trimEnd()); }, end: () => {} };
+    const late = setTimeout(() => link.close(4001, "no hello"), 5000);
+    link.on("message", (data, binary) => {
+      if (binary) return;
+      let message;
+      try { message = JSON.parse(String(data)); } catch { return; }
+      if (!device) {
+        const found = access.check(message.hello?.key);
+        if (!found) {
+          console.error(`clients: refused a connection from ${from} without a valid key`);
+          link.send(JSON.stringify({ error: "That key is not one this server issued." }));
+          return link.close(4003, "not allowed");
+        }
+        clearTimeout(late);
+        device = { name: found.name, kind: String(message.hello.kind ?? "client"), can: Array.isArray(message.hello.can) ? message.hello.can : [] };
+        links.set(link, device);
+        watchers.add(follower);
+        console.error(`clients: ${device.name} connected from ${from}`);
+        let saved = {};
+        try { saved = JSON.parse(readFileSync(configPath, "utf8")); } catch { /* none yet */ }
+        return link.send(JSON.stringify({ welcome: { name: cfg.name, state, config: forClients(saved) } }));
+      }
+      if (typeof message.command !== "string" || /^\s*watch\b/.test(message.command)) return;
+      const answer = { end: (text) => { if (link.readyState === 1) link.send(JSON.stringify({ id: message.id, reply: JSON.parse(text) })); }, write: () => {} };
+      Promise.resolve().then(() => handle(message.command, answer)).catch((error) => {
+        console.error(`command: ${error.stack ?? error.message}`);
+        answer.end(JSON.stringify({ ok: false, error: error.message }));
+      });
+    });
+    link.on("close", () => {
+      clearTimeout(late);
+      watchers.delete(follower);
+      if (device) console.error(`clients: ${device.name} disconnected`);
+      links.delete(link);
+    });
+    link.on("error", () => {});
+  });
+}
+if (DESK) {
+  startCanceller();
+  startSpotter();
+  startVoices();
+  // The canceller's microphone takes a moment to appear.
+  if (cfg.wakeWord || interruptWord()) setTimeout(openMic, canceller ? 1500 : 0);
+}
+if (BRAIN) connectMcpServers();
 
 // ---------------------------------------------------------------- hotkey
 //
@@ -3405,7 +3710,7 @@ watchHyprland();
 
 // A conversation nobody returns to still ends, and is still filed.
 setInterval(() => {
-  if (history.length && state === "idle" && Date.now() - lastActivity > cfg.idleResetMinutes * 60_000) reset();
+  if (BRAIN && history.length && state === "idle" && Date.now() - lastActivity > cfg.idleResetMinutes * 60_000) reset();
 }, 60_000).unref();
 
 function shutdown() {

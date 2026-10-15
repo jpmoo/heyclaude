@@ -90,7 +90,7 @@ local NEEDS = {
   voice = { "voice.list", "voices.status", "config.get" },
   listening = { "config.get", "reminders.list" },
   files = { "config.get" },
-  connections = { "config.get", "oracle.account", "mcp.list", "ollama.models" },
+  connections = { "client.get", "config.get", "oracle.account", "mcp.list", "ollama.models" },
   log = { "log.recent" },
 }
 
@@ -772,6 +772,42 @@ local function connectionsTab()
   local account = D["oracle.account"] or {}
   local servers = (D["mcp.list"] or {}).servers or {}
   local out = {}
+
+  -- Where Morgan lives: wholly on this laptop, or on the home server with
+  -- this laptop as a client of it. Changing it starts this laptop's Morgan again.
+  local place = D["client.get"] or {}
+  local function draft(key: string, value: string?): string
+    return if drafts[key] ~= nil then drafts[key] else (value or "")
+  end
+  local function input(key: string, label: string, value: string?, placeholder: string)
+    return ui.row({ gap = 10, align = "center" }, {
+      ui.row({ width = 200, align = "center" }, { ui.label({ text = label, color = "on_surface", fontSize = 12, maxWidth = 196 }) }),
+      ui.input({
+        key = `{key}#{version}`, value = value or "", placeholder = placeholder, flexGrow = 1, controlSize = "sm",
+        onChange = function(text)
+          drafts[key] = text
+        end,
+      }),
+    })
+  end
+  table.insert(out, card(`Where {who()} lives`, {
+    hint(if place.role == "client"
+      then `On the server at {place.server}, as {place.device}; {if place.connected then "connected" else "not reachable just now"}.`
+      elseif place.role == "server" then "This is the server."
+      else "Wholly on this laptop. Give a server's address and a key from it to make this laptop one of its clients."),
+    input("home.server", "Server", place.server, "home-server:8790, or https://your-tailnet-name/heyclaude"),
+    input("home.key", "Key", "", if place.hasKey then "(kept; paste a new one to replace it)" else "hc_… from `heyclaude access add <device>` on the server"),
+    input("home.device", "This device's name", place.device, "laptop"),
+    ui.row({ gap = 8 }, {
+      ui.button({ text = "Use this server", glyph = "plug-connected", variant = "secondary", controlSize = "sm", onClick = function()
+        change("client.set", { server = draft("home.server", place.server), key = draft("home.key", ""), device = draft("home.device", place.device) },
+          `Saved. {who()} is starting again as a client of that server…`)
+      end }),
+      ui.button({ text = "Run wholly on this laptop", glyph = "device-laptop", variant = "ghost", controlSize = "sm", visible = place.role == "client", onClick = function()
+        change("client.set", { server = "" }, `Saved. {who()} is starting again on this laptop…`)
+      end }),
+    }),
+  }))
 
   local chat = {}
   for _, model in ipairs(models.chat or {}) do

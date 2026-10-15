@@ -130,13 +130,14 @@ The server app issues the keys that let client apps in; nothing reaches Morgan
 without one.
 
 - **Issued by the server, one per device.** On the home server,
-  `heyclaude key add laptop` prints a new key once (`hc_` and 32 random bytes,
+  `heyclaude access add laptop` prints a new key once (`hc_` and 32 random bytes,
   base64url). The server keeps only its hash, with the device's name, when it was
-  made and when it was last used, in `data/keys.json`.
+  made and when it was last used, in `data/access.json`. (`heyclaude key` is the
+  memory key's command, so these are `heyclaude access`.)
 - **Entered on the device**, beside "Morgan's home" in its settings, and kept in
   its `client.json`.
-- **Listed and revoked** with `heyclaude key list` and
-  `heyclaude key remove kitchen-dot` on the server, or from the settings window
+- **Listed and revoked** with `heyclaude access list` and
+  `heyclaude access remove kitchen-dot` on the server, or from the settings window
   of a laptop that is already connected (a Keys card on the Connections tab).
   A revoked key's connection is closed at once.
 - **The first key is made on the server**, from its terminal; after that, keys
@@ -213,6 +214,17 @@ And two corrections to the review:
   ("Hey Morgan", and the name is a setting) and has ARM builds. Whether it keeps
   up on a Zero 2 W has to be measured; openWakeWord with a trained "Hey Morgan"
   is the fallback.
+
+## Where it stands
+
+Built and tested on the laptop (`tests/remote.sh` runs a trial server and client
+side by side): the three roles, the server's port and access keys, the client
+relaying commands and events, spoken turns answered on the server and spoken on
+the client, the settings mirrored from the server, the "can't reach home" line,
+and the "Where Morgan lives" settings. Deploying it is in [deploy.md](deploy.md).
+
+Not yet: sight and the laptop's folders as abilities the server asks the laptop
+for; speech on the AI server (Phase 1); wake arbitration (Phase 3); the Dot.
 
 ## Phases
 

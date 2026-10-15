@@ -4,6 +4,7 @@
   "description": "Morgan: a voice and chat assistant for the desktop, run by a local model that consults Claude.",
   "type": "module",
   "dependencies": {
-    "sherpa-onnx-node": "^1.13.8"
+    "sherpa-onnx-node": "^1.13.8",
+    "ws": "^8.22.0"
   }
 }

@@ -1,0 +1,33 @@
+# heyclaude on the home server — reference template, as Brigid's is.
+#
+# It runs from its project checkout, as the other web apps there do. Replace:
+#   User=             the account that owns the checkout
+#   WorkingDirectory= the absolute checkout path
+#   ExecStart=        the checkout path again (and node's, from `command -v node`)
+#   ReadWritePaths=   the checkout path once more
+# The port is in .env in the checkout (see .env.example).
+
+[Unit]
+Description=heyclaude — Morgan's brain, serving its clients
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jpmoore
+WorkingDirectory=/home/jpmoore/heyclaude
+ExecStart=/usr/bin/node /home/jpmoore/heyclaude/daemon.mjs
+# Saving some settings asks for a restart, which it does by exiting.
+Restart=always
+RestartSec=3
+Environment=NODE_ENV=production
+# `claude` (the Oracle) and anything installed for the account.
+Environment=PATH=/home/jpmoore/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/home/jpmoore/heyclaude /home/jpmoore/.config/heyclaude /home/jpmoore/.local/share/heyclaude
+
+[Install]
+WantedBy=multi-user.target
