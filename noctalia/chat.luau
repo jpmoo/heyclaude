@@ -70,6 +70,7 @@ local function scanner(count: number, width: number, height: number, color: stri
 end
 
 local opened = 0 -- bumped on each open, to start at the newest message
+local sent = 0 -- bumped on each send, to jump to the answer wherever the list was
 local render -- defined below; the buttons need to call it
 
 local unfolded = {} -- by message: whether what the Oracle said is showing
@@ -333,6 +334,10 @@ local function send(text: string)
   end
   noctalia.state.set("draft", "")
   draft += 1
+  -- To the answer: the list scrolled to the bottom, and the calendar or similar list put away.
+  sent += 1
+  calendarOpen = false
+  similarOpen = false
 end
 
 render = function()
@@ -659,7 +664,7 @@ render = function()
     elseif similarOpen then ui.scroll({ key = "similar", gap = 4, padding = 10, flexGrow = 1, radius = 12, fill = "surface_variant" }, similar)
     else ui.scroll({
       key = "lines", gap = 8, padding = 10, flexGrow = 1, radius = 12, fill = "surface_variant",
-      stickToBottom = true, scrollToBottomRev = opened,
+      stickToBottom = true, scrollToBottomRev = opened + sent,
     }, lines),
   }
   if nav then
