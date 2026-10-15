@@ -2017,5 +2017,50 @@
    "source": "self",
    "change": true
   }
+ },
+ {
+  "say": "Read otter-notes.txt from my Downloads folder and tell me what a group of resting otters is called.",
+  "want": {
+   "source": "self",
+   "lookup": false,
+   "look": false,
+   "files": true
+  }
+ },
+ {
+  "say": "What's in the recipe file in my Documents?",
+  "want": {
+   "source": "self",
+   "lookup": false,
+   "look": false,
+   "files": true
+  }
+ },
+ {
+  "say": "List the files in my Downloads folder.",
+  "want": {
+   "source": "self",
+   "lookup": false,
+   "look": false,
+   "files": true
+  }
+ },
+ {
+  "say": "Find the PDF about the school budget.",
+  "want": {
+   "source": "self",
+   "lookup": false,
+   "look": false,
+   "files": true
+  }
+ },
+ {
+  "say": "What does the meeting notes file say about the deadline?",
+  "want": {
+   "source": "self",
+   "lookup": false,
+   "look": false,
+   "files": true
+  }
  }
 ]

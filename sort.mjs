@@ -14,7 +14,7 @@ const KINDS = ["yours", "conversation", "settled", "world", "current"];
 
 // What the turn calls for is given as a list of only what applies, which is
 // most often nothing: nine yes-or-noes took half as long again to write out.
-const NEEDS = ["calendar_tasks_or_notes", "sum", "oracle", "asks_for_change", "reminder_or_timer", "asks_to_keep", "needs_seeing", "earlier_talk"];
+const NEEDS = ["calendar_tasks_or_notes", "computer_files", "sum", "oracle", "asks_for_change", "reminder_or_timer", "asks_to_keep", "needs_seeing", "earlier_talk"];
 
 const SCHEMA = {
   type: "object",
@@ -40,7 +40,9 @@ const instructions = (name) => [
   "asking, not by what the assistant said it would look through.",
   "- yours: the user's own life, people, things, plans, work, files or earlier conversations; an instruction to the assistant",
   "  to remember, set, make, change, add, create, cancel or do something; or about the assistant itself. The user's own tasks,",
-  "  calendar, events, meetings, reminders, mail and notes are always yours, whatever day they are about. So is a question",
+  "  calendar, events, meetings, reminders, mail and notes are always yours, whatever day they are about. So is anything about",
+  "  the files and folders on the user's computer: listing, finding or reading one, or a question about what a file says,",
+  "  even when the file is about the world. So is a question",
   "  about anything the user calls my or mine: my commute, my sister, my recipe.",
   "- conversation: small talk, greetings, thanks, feelings, opinions, jokes, brainstorming, naming things, wording, writing or",
   "  rewriting, advice on how to go about something where there is no single right answer.",
@@ -64,7 +66,11 @@ const instructions = (name) => [
   "of that sort and asks for it again (\"try again\"), or for another day or another part of it, this is true as well.",
   "False for everything else. In particular false for who the user's family, friends and pets are, where anyone lives, what",
   "the user does, owns or likes, and their routines: the assistant knows those by heart. False for an instruction to create or",
-  "change something, and for anything about the world.",
+  "change something, for anything about the world, and for files and folders on the computer.",
+  "",
+  "computer_files: the user wants a file or folder on their computer listed, found, read, kept or asked about: \"what's in",
+  "my Downloads folder?\", \"read the recipe file\", \"find the PDF about the budget\", \"what does that notes file say about",
+  "the deadline?\". The answer is in the file, so it is never needs_seeing and never a question for the Oracle.",
   "",
   "sum: true if the message asks for arithmetic to be worked out on numbers it gives: a percentage, a total, a tip, a split,",
   "a product, a difference, an average. False for a question whose answer merely is a number.",
@@ -92,7 +98,7 @@ const instructions = (name) => [
   "Not for what was said a moment ago in this conversation, and not for facts about the user.",
 ].join("\n");
 
-// Returns { follows, about, lookup, sum, oracle, change, reminder, keep, look, earlier }, or null if it could not be sorted.
+// Returns { follows, about, lookup, sum, oracle, change, reminder, keep, look, earlier, files }, or null if it could not be sorted.
 // `earlier` is the last few messages of the conversation: [{ role, content }].
 export async function sortTurn({ url, model, keepAlive, name }, text, earlier = []) {
   // The user's words whole, and the gist of each reply: a reply's opening is
@@ -121,11 +127,19 @@ export async function sortTurn({ url, model, keepAlive, name }, text, earlier = 
     const sorted = JSON.parse(body.message.content);
     if (!KINDS.includes(sorted.about)) return null;
     const calls = new Set(sorted.calls_for ?? []);
-    return {
+    const turn = {
       follows: sorted.follows === true, about: sorted.about, lookup: calls.has("calendar_tasks_or_notes"), sum: calls.has("sum"),
       oracle: calls.has("oracle"), change: calls.has("asks_for_change"), reminder: calls.has("reminder_or_timer"),
-      keep: calls.has("asks_to_keep"), look: calls.has("needs_seeing"), earlier: calls.has("earlier_talk"),
+      keep: calls.has("asks_to_keep"), look: calls.has("needs_seeing"), earlier: calls.has("earlier_talk"), files: calls.has("computer_files"),
     };
+    // The answer to a question about the user's files or earlier talk is in
+    // the file or the record, whatever its subject: never the Oracle's, and
+    // never a lookup in their services or a look at the screen.
+    if (turn.files || turn.earlier) {
+      if (turn.about !== "conversation") turn.about = "yours";
+      if (turn.files) { turn.lookup = false; turn.look = false; }
+    }
+    return turn;
   } catch (error) {
     console.error(`sort: ${error.message}`);
     return null;

@@ -9,8 +9,13 @@ import { readFileSync } from "node:fs";
 import { loadConfig, BASICS } from "../lib.mjs";
 import { sortTurn } from "../sort.mjs";
 
+// The settings in use here; on a client they are the server's mirror, which
+// may leave out Ollama, so the laptop's own settings stand in for it then.
+import { CONFIG_HOME } from "../lib.mjs";
+import { existsSync, readFileSync as read } from "node:fs";
 const config = loadConfig();
-const ollama = { ...BASICS.ollama, ...config.ollama };
+const own = existsSync(`${CONFIG_HOME}/config.json`) ? JSON.parse(read(`${CONFIG_HOME}/config.json`, "utf8")) : {};
+const ollama = { ...BASICS.ollama, ...own.ollama, ...config.ollama };
 const name = config.name ?? BASICS.name;
 const cases = JSON.parse(readFileSync(new URL("sorting.json", import.meta.url), "utf8"));
 const verbose = process.argv.includes("-v");

@@ -30,6 +30,11 @@ import json, os, sys
 config = json.load(open(os.path.expanduser("~/.config/heyclaude/config.json")))
 config.update({"wakeWord": None, "interruptWord": None, "tts": None, "engine": "piper", "hotkey": None,
                "echoCancel": False, "record": "sleep 100", "followUpSeconds": 0, "mcpServers": {}})
+# Folders and sight for the client to offer the server, when a test gives them.
+if os.environ.get("FOLDERS"):
+    config["folders"] = json.loads(os.environ["FOLDERS"])
+if os.environ.get("SIGHT"):
+    config["sight"] = json.loads(os.environ["SIGHT"])
 # A spoken answer is "played" into a file, so that a test can tell it was spoken without anyone hearing it.
 if os.environ.get("PLAYED"):
     piper = os.path.expanduser("~/.local/share/heyclaude/piper/piper")
@@ -49,7 +54,7 @@ echo "{\"server\": \"127.0.0.1:$port\", \"key\": \"$key\", \"device\": \"trial-l
 export HEYCLAUDE_SOCKET="${XDG_RUNTIME_DIR:-/tmp}/hc-client.sock"
 ( while true; do
     (cd "$root" && HEYCLAUDE_TRIALRUN="$trial" HEYCLAUDE_ROLE=client HEYCLAUDE_CLIENT_FILE="$trial/client.json" \
-      HEYCLAUDE_MIRROR="$trial/mirror.json" HEYCLAUDE_CONFIG="$trial/mirror.json" exec node daemon.mjs) >> "$trial/client.log" 2>&1 || true
+      HEYCLAUDE_MIRROR="$trial/mirror.json" HEYCLAUDE_CONFIG="$trial/mirror.json" exec env ${CLIENT_ENV:-} node daemon.mjs) >> "$trial/client.log" 2>&1 || true
     sleep 1
   done ) &
 client_loop=$!

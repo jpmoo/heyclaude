@@ -136,9 +136,21 @@ To go back to running everything on the laptop:
 heyclaude disconnect
 ```
 
-## Not yet, as a client
+## Updating the server
 
-Looking at the screen, the clipboard or the camera, and reading files from the
-laptop's folders, need the server to ask the laptop to do them. Until that is
-built, they are unavailable while the laptop is a client. Attaching a file to a
-message does work: the laptop reads it and sends what it holds.
+On the server, in the checkout:
+
+```bash
+./restart.sh
+```
+
+It pulls, reinstalls, checks and restarts the service (asking for your sudo
+password), and brings the old version back up if any step fails. Restart the
+laptop's Morgan afterwards so both sides match: `systemctl --user restart heyclaude`.
+
+## As a client
+
+Looking at the laptop's screen, clipboard or camera, and finding, listing and
+reading files in its folders, are done by the laptop when the server asks for
+them; the server does the describing and the thinking. Attaching a file to a
+message works too: the laptop reads it and sends what it holds.

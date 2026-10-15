@@ -207,6 +207,7 @@ watchFile(configPath, { interval: 1000 }, () => {
     const saved = JSON.parse(readFileSync(configPath, "utf8"));
     for (const key of LIVE) cfg[key] = key in saved ? saved[key] : defaults[key];
     if (ROLE === "server") tellClients({ config: forClients(saved) });
+    if (ROLE === "client" && homeLink?.readyState === 1) homeLink.send(JSON.stringify({ can: abilities() }));
   } catch { /* half-written, or gone: keep what we have */ }
 });
 
@@ -459,7 +460,7 @@ const SIGHT = {
   camera: { tool: "look_at_camera", what: "photo from the laptop's camera", hint: "look_at_camera shows you what is in front of the laptop, usually them" },
 };
 
-const sightTools = () => (DESK ? cfg.sight : []).map((source) => ({
+const sightTools = () => (DESK ? cfg.sight : cfg.sight.filter((source) => clientCan(`sight:${source}`))).map((source) => ({
   type: "function",
   function: {
     name: SIGHT[source].tool,
@@ -512,6 +513,11 @@ let lastLook = null; // { source, bytes, t }: what was last looked at, held in m
 
 // Take a picture. Resolves to its bytes, or to { text } when there is no picture to take.
 async function capture(source, args) {
+  // On a server, the picture is taken by the client that can see.
+  if (!DESK) {
+    const got = await askClient("capture", { source, whole_screen: Boolean(args?.whole_screen) });
+    return got?.text !== undefined ? { text: got.text } : Buffer.from(String(got?.data ?? ""), "base64");
+  }
   const file = join(RUNTIME, `heyclaude-look-${process.pid}.${source === "camera" ? "jpg" : "png"}`);
   try {
     if (source === "screen") {
@@ -612,7 +618,7 @@ async function rememberPicture(args) {
 // saving are done here, before the model is asked for its answer.
 
 async function sightIntent(text, likely) {
-  if (!DESK || !cfg.sight.length || !likely) return null;
+  if (!likely || !(DESK ? cfg.sight : cfg.sight.filter((source) => clientCan(`sight:${source}`))).length) return null;
   try {
     const response = await fetch(`${cfg.ollama.url}/api/chat`, {
       method: "POST",
@@ -893,8 +899,9 @@ setInterval(() => {
 }, 1000).unref();
 
 
-async function keepIntent(text, files, likely) {
-  if (!likely || !(files.length || lastRead || cfg.folders.length)) return "";
+async function keepIntent(text, files, likely, given = []) {
+  const folders = DESK ? cfg.folders.length > 0 : clientCan("files");
+  if (!likely || !(files.length || given.length || lastRead || folders)) return "";
   let intent;
   try {
     const response = await fetch(`${cfg.ollama.url}/api/chat`, {
@@ -917,7 +924,7 @@ async function keepIntent(text, files, likely) {
             + "learned, taken in or saved as memories or notes. Both are false for remembering a simple fact they state themselves, "
             + "and for anything else. title: a short title for the document, "
             + "such as Sourdough recipe. file: the name or path of the file if they give one, or the words they use to describe it; "
-            + `empty if they mean a file already attached or just read. ${files.length ? `Attached to this message: ${files.map((file) => basename(file)).join(", ")}.` : ""}`
+            + `empty if they mean a file already attached or just read. ${files.length || given.length ? `Attached to this message: ${[...files.map((file) => basename(file)), ...given.map((file) => file.name)].join(", ")}.` : ""}`
             + `${lastRead ? ` The file read most recently: ${basename(lastRead.path)}.` : ""}`,
         }, { role: "user", content: text }],
       }),
@@ -929,16 +936,28 @@ async function keepIntent(text, files, likely) {
   }
   if (!intent.keep && !intent.extract) return "";
   const title = intent.title.trim() || "Document";
+  // On a server, the folders and their files are the client's.
+  const allowedHere = (path) => (DESK ? allowed(path) : askClient("allowed", { path }).catch(() => null));
+  const findHere = (hint) => (DESK ? findByWords(hint) : askClient("find", { hint }).catch(() => null));
+  const readHere = (path) => (DESK ? readDocument(path, text) : askClient("read", { path, question: text }));
   try {
     let path = files[0] ? home(files[0]) : null;
-    if (!path && intent.file) path = allowed(intent.file) ?? await findByWords(`${intent.file} ${title}`);
-    if (!path && lastRead && Date.now() - lastRead.t < 15 * 60_000) path = lastRead.path;
-    if (!path && cfg.folders.length) path = await findByWords(title);
+    let content = null;
+    if (!path && given[0]) { path = given[0].name; content = given[0].content; }
+    if (!path && intent.file) path = await allowedHere(intent.file) ?? await findHere(`${intent.file} ${title}`);
+    if (!path && lastRead && Date.now() - lastRead.t < 15 * 60_000) { path = lastRead.path; content = lastRead.text; }
+    if (!path && folders) path = await findHere(title);
     if (!path) return " You were asked to keep a document, but which file is meant could not be worked out, so nothing has been kept. Ask them which file.";
-    const content = await readDocument(path, text);
+    // A folder named in place of the file: the file is looked for in it, by the words used for it.
+    try { content ??= await readHere(path); } catch (error) {
+      if (!/EISDIR|directory/i.test(error.message)) throw error;
+      path = await findHere(`${intent.file} ${title}`);
+      if (!path) return " You were asked to keep a document from a folder, but which file in it is meant could not be worked out, so nothing has been kept. Ask them which file.";
+      content = await readHere(path);
+    }
     lastRead = { path, text: content, t: Date.now() };
     // An attached file is already in front of the model; one found in a folder is not.
-    if (!files.length) did("read_file", { path }, content);
+    if (!files.length && !given.length) did("read_file", { path }, content);
     if (intent.keep) {
       keepDocument(title, path, content);
       did("keep_document", { title, file: path }, `Done, just now: the full text of ${basename(path)} is kept under the title "${title}".`);
@@ -1035,7 +1054,7 @@ function recallDocument(args) {
   return `${found.title} (kept ${new Date(found.t).toLocaleDateString()}, from ${basename(found.source)}):\n\n${found.text}`;
 }
 
-const fileTools = () => (DESK && cfg.folders.length ? [{
+const fileTools = () => ((DESK ? cfg.folders.length : clientCan("files")) ? [{
   type: "function",
   function: {
     name: "list_folder",
@@ -1063,6 +1082,14 @@ const fileTools = () => (DESK && cfg.folders.length ? [{
 }] : []);
 
 async function fileTool(name, args) {
+  // On a server, the folders are the client's, and so is the reading.
+  if (!DESK) {
+    try {
+      const got = await askClient("files", { name, args });
+      if (name === "read_file") lastRead = { path: String(args.path ?? ""), text: String(got), t: Date.now() };
+      return String(got);
+    } catch (error) { return `That failed: ${error.message}`; }
+  }
   try {
     if (name === "find_files") {
       const wanted = String(args.name ?? "").replace(/[*?\[\]]/g, "");
@@ -1124,7 +1151,11 @@ function emit(event) {
 
 function setState(next) {
   state = next;
-  emit({ type: "state", state, typed: quiet }); // a typed turn is followed where it was typed, not in the voice popup
+  // A typed turn is followed where it was typed, not in the voice popup.
+  // Listening is never typed: "quiet" is left over from the last turn until
+  // the next one begins, and after a typed turn the popup stayed shut on
+  // "Hey Morgan" until the answer came.
+  emit({ type: "state", state, typed: quiet && next !== "listening" && next !== "transcribing" });
   bindEscape(next !== "idle");
 }
 
@@ -2016,7 +2047,7 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
   const lapsed = history.length ? [] : lastConversation();
   const sorted = (YES.test(words(text).join(" ")) ? null
     : await sortTurn({ ...cfg.ollama, name: cfg.name }, text, history.length ? history : lapsed.flatMap((item) => [{ role: "user", content: item.user }, { role: "assistant", content: item.morgan }])))
-    ?? { follows: false, about: null, lookup: false, sum: false, oracle: false, change: false, reminder: false, keep: false, look: false, earlier: false };
+    ?? { follows: false, about: null, lookup: false, sum: false, oracle: false, change: false, reminder: false, keep: false, look: false, earlier: false, files: false };
   if (mine !== turn) return;
   emit({ type: "kind", kind: sorted.about, ...Object.fromEntries(Object.entries(sorted).filter(([key, value]) => key !== "about" && value)) });
   // "Try again", said after the conversation has lapsed, means the last thing
@@ -2154,7 +2185,7 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
     }
     await reminderIntent(text, sorted.reminder);
     if (mine !== turn) return;
-    seen += await keepIntent(text, files, sorted.keep);
+    seen += await keepIntent(text, files, sorted.keep, given);
     if (mine !== turn) return;
     // Asked about earlier talk ("when did we last speak?"), the model answered
     // from its head and made a day up. What the record holds is put in front
@@ -3141,6 +3172,7 @@ function startActive(patience, said = "") {
   openMic();
   resetUtterance();
   active = { since: Date.now(), patience, said };
+  quiet = false; // what follows is spoken
   setState("listening");
 }
 
@@ -3443,11 +3475,36 @@ server.listen(SOCKET, () => console.error(`heyclaude listening on ${SOCKET}`));
 // { id, command: "type ..." } and gets { id, reply }; and every event Morgan
 // emits goes to every client, as it goes to anything following the local socket.
 
+// What only a client can do, asked of it: take a picture of its screen,
+// clipboard or camera, and find, list and read files in its folders. Asked of
+// the client the turn came from when it can, otherwise of any that can.
+const askedOf = new Map(); // ability request id -> its resolve
+let nextAsk = 0;
+let turnFrom = null; // the client whose command started the turn in hand
+
+const clientCan = (ability) => [...links.values()].some((device) => device.can.includes(ability));
+
+function askClient(name, args = {}, wait = 60_000) {
+  const able = [...links.entries()].filter(([, device]) => device.can.includes(name === "capture" ? `sight:${args.source}` : "files"));
+  const chosen = able.find(([link]) => link === turnFrom) ?? able[0];
+  if (!chosen) return Promise.reject(new Error(name === "capture" ? `no connected device can see its ${args.source}` : "no connected device has folders it may read"));
+  const [link] = chosen;
+  return new Promise((resolve, reject) => {
+    const id = ++nextAsk;
+    const timer = setTimeout(() => { askedOf.delete(id); reject(new Error("the device took too long")); }, wait);
+    askedOf.set(id, (answer) => {
+      clearTimeout(timer);
+      if (answer?.error) reject(new Error(answer.error)); else resolve(answer?.result);
+    });
+    link.send(JSON.stringify({ ability: { id, name, args } }));
+  });
+}
+
 const access = createAccess(join(process.env.HEYCLAUDE_DATA ?? CONFIG_HOME, "access.json"));
 const links = new Map(); // a client's socket -> { name, kind, can }
 
 // What a client is told of the settings: not the services' addresses and keys.
-const forClients = (saved) => Object.fromEntries(Object.entries(saved).filter(([key]) => !["mcpServers", "oracle", "ollama"].includes(key)));
+const forClients = (saved) => Object.fromEntries(Object.entries(saved).filter(([key]) => !["mcpServers", "oracle"].includes(key)));
 function tellClients(message) {
   const text = JSON.stringify(message);
   for (const link of links.keys()) if (link.readyState === 1) link.send(text);
@@ -3486,7 +3543,7 @@ function remote(command, wait = 45_000) {
 async function connectHome() {
   const { WebSocket } = await import("ws");
   const link = new WebSocket(homeAddress(CLIENT.server), { handshakeTimeout: 8000 });
-  link.on("open", () => link.send(JSON.stringify({ hello: { key: CLIENT.key, device: CLIENT.device ?? hostname(), kind: CLIENT.kind ?? "laptop", can: [] } })));
+  link.on("open", () => link.send(JSON.stringify({ hello: { key: CLIENT.key, device: CLIENT.device ?? hostname(), kind: CLIENT.kind ?? "laptop", can: abilities() } })));
   link.on("message", (data) => {
     let message;
     try { message = JSON.parse(String(data)); } catch { return; }
@@ -3497,6 +3554,7 @@ async function connectHome() {
     }
     if (message.error) return console.error(`home: ${message.error}`);
     if (message.config) return mirror(message.config);
+    if (message.ability) return doForServer(link, message.ability);
     if (message.id !== undefined) {
       const done = replies.get(message.id);
       replies.delete(message.id);
@@ -3517,6 +3575,32 @@ async function connectHome() {
   link.on("error", (error) => console.error(`home: could not reach ${CLIENT.server}: ${error.message}`));
 }
 
+// What this client can do for the server: look through what its settings let it, and read its folders.
+const abilities = () => [...cfg.sight.map((source) => `sight:${source}`), ...(cfg.folders.length ? ["files"] : [])];
+
+// Something the server asked of this machine, done here and answered.
+async function doForServer(link, { id, name, args = {} }) {
+  const answer = (body) => { if (link.readyState === 1) link.send(JSON.stringify({ abilityResult: { id, ...body } })); };
+  try {
+    if (name === "capture") {
+      if (!cfg.sight.includes(args.source)) throw new Error(`looking at the ${args.source} is not allowed on this device`);
+      const got = await capture(args.source, args);
+      return answer({ result: got.text !== undefined ? { text: got.text } : { data: got.toString("base64") } });
+    }
+    if (name === "files") return answer({ result: await fileTool(String(args.name), args.args ?? {}) });
+    if (name === "allowed") return answer({ result: allowed(String(args.path ?? "")) });
+    if (name === "find") return answer({ result: await findByWords(String(args.hint ?? "")) });
+    if (name === "read") {
+      const path = allowed(String(args.path ?? ""));
+      if (!path) throw new Error("that is outside the folders this device may read");
+      return answer({ result: await readDocument(path, String(args.question ?? "")) });
+    }
+    throw new Error(`this device does not know how to ${name}`);
+  } catch (error) {
+    answer({ error: error.message.split("\n")[0] });
+  }
+}
+
 // The server's settings, kept here as the mirror this client starts from.
 // What can change while running does, as the file is watched; anything else
 // (the voice, the wake phrase, the hotkey) needs this client started again.
@@ -3528,7 +3612,7 @@ function mirror(config) {
   if (before === text) return;
   writeFileSync(MIRROR, text, { mode: 0o600 });
   const fixed = [...new Set([...Object.keys(config), ...Object.keys(user)])]
-    .filter((key) => !LIVE.includes(key) && !["mcpServers", "oracle", "ollama"].includes(key) && JSON.stringify(config[key]) !== JSON.stringify(user[key]));
+    .filter((key) => !LIVE.includes(key) && !["mcpServers", "oracle"].includes(key) && JSON.stringify(config[key]) !== JSON.stringify(user[key]));
   if (configPath !== MIRROR || fixed.length) {
     console.error(`home: settings changed on the server (${fixed.join(", ") || "first mirror"}); starting again to take them up`);
     setTimeout(() => process.exit(0), 300);
@@ -3659,7 +3743,14 @@ if (ROLE === "server") {
         try { saved = JSON.parse(readFileSync(configPath, "utf8")); } catch { /* none yet */ }
         return link.send(JSON.stringify({ welcome: { name: cfg.name, state, config: forClients(saved) } }));
       }
+      if (message.abilityResult) {
+        const done = askedOf.get(message.abilityResult.id);
+        askedOf.delete(message.abilityResult.id);
+        return done?.(message.abilityResult);
+      }
+      if (Array.isArray(message.can)) { device.can = message.can; return; }
       if (typeof message.command !== "string" || /^\s*watch\b/.test(message.command)) return;
+      if (/^\s*(say|type|ask|continue)\b/.test(message.command)) turnFrom = link;
       const answer = { end: (text) => { if (link.readyState === 1) link.send(JSON.stringify({ id: message.id, reply: JSON.parse(text) })); }, write: () => {} };
       Promise.resolve().then(() => handle(message.command, answer)).catch((error) => {
         console.error(`command: ${error.stack ?? error.message}`);
