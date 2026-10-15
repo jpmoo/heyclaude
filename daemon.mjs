@@ -11,7 +11,7 @@ import { ROLE, CLIENT, CLIENT_FILE, MIRROR } from "./env.mjs"; // first: which p
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { connect, createServer } from "node:net";
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, watchFile, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, watchFile, writeFileSync } from "node:fs";
 import { basename, dirname, extname, resolve } from "node:path";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
@@ -392,13 +392,13 @@ const MORGAN_TOOLS = [{
   type: "function",
   function: {
     name: "remember",
-    description: "Add one note to a memory topic, creating the topic if it is new.",
+    description: "Add one note to memory, under the topic for that part of the user's life. People, projects and things go under an existing topic (People, Work, Projects...), never a topic of their own.",
     parameters: {
       type: "object",
       properties: {
         topic: { type: "string", description: "An existing topic name, or a short name for a new one" },
-        note: { type: "string", description: "One self-contained fact, in a full sentence in the third person that names the user. Never I, me or my, and never the words the user" },
-        description: { type: "string", description: "For a new topic: one line saying what belongs in it" },
+        note: { type: "string", description: "One note about one subject, complete in itself: in the third person, naming the user, and as many full sentences as it needs to keep every name, role and detail. Never I, me or my." },
+        description: { type: "string", description: "Only if no topic fits: one line saying what broad area of life it is" },
       },
       required: ["topic", "note"],
     },
@@ -905,6 +905,7 @@ setInterval(() => {
 // Source code is never read for facts about the user.
 const CODE = /\.(m?[jt]sx?|cjs|py|rb|go|rs|java|kt|swift|c|cc|cpp|h|hpp|cs|php|lua|luau|sh|bash|fish|sql|css|scss|html?|vue|svelte|json|ya?ml|toml|lock)$/i;
 let documentTurn = false; // the turn in hand was about keeping a document, not a fact
+let turnText = ""; // what the user said in the turn in hand
 
 async function keepIntent(text, files, likely, given = []) {
   const folders = DESK ? cfg.folders.length > 0 : clientCan("files");
@@ -1026,14 +1027,16 @@ async function rememberFacts(text) {
           properties: {
             notes: { type: "array", items: { type: "object", properties: { topic: { type: "string" }, note: { type: "string" } }, required: ["topic", "note"] } },
             replaces: { type: "array", items: { type: "integer" } },
+            named_topic: { type: "string" },
           },
-          required: ["notes", "replaces"],
+          required: ["notes", "replaces", "named_topic"],
         },
         messages: [{
           role: "system",
           content: `${who} has asked an assistant to remember something. Write down what they want remembered.\n`
-            + `notes: each fact as one complete, self-contained sentence in the third person, naming ${who} (\"${who}'s boss is Chuck, `
-            + "the Superintendent of ...\"), with the names, roles and details they gave, and nothing they did not say. Use what was "
+            + `notes: one note for each subject, complete in itself, in the third person naming ${who}, in as many full sentences as it `
+            + "needs to keep the names, roles and details they gave, and nothing they did not say.\n"
+            + "named_topic: the topic they say it should go under (\"file it under Garden\"), exactly as they say it; empty if they name none. Use what was "
             + "said just before to know who or what \"he\", \"it\" or \"that\" is. Give each a topic from this list, or a short new one "
             + `if none fits:\n${topics().map((topic) => `- ${topic.name}: ${topic.description}`).join("\n")}\n`
             + "replaces: the numbers of the held notes below that the new notes correct or contradict, or that the user says should not "
@@ -1047,12 +1050,30 @@ async function rememberFacts(text) {
     console.error(`remember: ${error.message}`);
     return;
   }
-  const notes = (answer.notes ?? []).map((entry) => ({ topic: String(entry.topic ?? "").trim(), note: String(entry.note ?? "").replace(/\s+/g, " ").trim() }))
-    .filter((entry) => slug(entry.topic) && entry.note.length > 3);
+  // A topic the user named is used as they named it; otherwise the gate chooses.
+  const asked = String(answer.named_topic ?? "").trim();
+  const notes = (answer.notes ?? []).map((entry) => ({ topic: asked || String(entry.topic ?? "").trim(), note: String(entry.note ?? "").replace(/\s+/g, " ").trim(), ...(asked ? { mine: true } : {}) }))
+    .filter((entry) => entry.note.length > 3);
   // A note "replaced" by the very same words is simply kept.
   const plainNote = (text) => words(String(text).replace(/\(\d{4}-\d{2}-\d{2}\)\s*$/, "")).join(" ");
   const saying = new Set(notes.map((entry) => plainNote(entry.note)));
-  const dropped = [...new Set(answer.replaces ?? [])].map((number) => near[number - 1]).filter((entry) => entry && !saying.has(plainNote(entry.note)));
+  const candidates = [...new Set(answer.replaces ?? [])].map((number) => near[number - 1]).filter((entry) => entry && !saying.has(plainNote(entry.note)));
+  // Each one checked on its own before it goes: saving a favourite flour once
+  // took out four sourdough notes as "corrected". Being about the same thing
+  // is not being wrong now.
+  const dropped = [];
+  for (const entry of candidates) {
+    try {
+      const verdict = await askOllama(
+        `A note held in ${who}'s memory, and what ${who} has just said. wrong: true only if what they said contradicts the held note or `
+          + "replaces it, so that keeping it would now be wrong, or if they said outright not to keep it. False if the held note is about "
+          + "the same subject but still true, or adds something the new words do not.",
+        `Held note: ${bareNote(entry.note)}\n\nWhat ${who} said: ${text}\n\nWhat is being saved: ${notes.map((item) => item.note).join(" ") || "(nothing)"}`,
+        { wrong: { type: "boolean" } },
+      );
+      if (verdict.wrong) dropped.push(entry);
+    } catch { /* kept, when in doubt */ }
+  }
   if (!notes.length && !dropped.length) return;
   for (const entry of dropped) {
     const topic = readTopic(entry.topic);
@@ -1060,7 +1081,7 @@ async function rememberFacts(text) {
     writeTopic({ ...topic, notes: topic.notes.filter((note) => note !== entry.note) });
     emit({ type: "memory", topic: entry.topic, note: entry.note.replace(/\s*\(\d{4}-\d{2}-\d{2}\)\s*$/, ""), removed: true });
   }
-  for (const entry of notes) memoryTool("remember", entry);
+  for (const entry of notes) await memoryTool("remember", entry.mine ? { topic: readTopic(entry.topic)?.name ?? entry.topic, note: entry.note, placed: true } : entry);
   did("remember", { notes: notes.map((entry) => entry.note) }, `Done, just now, and nothing more to do: ${notes.length
     ? `saved ${notes.map((entry) => `"${entry.note}" under ${entry.topic}`).join("; ")}` : "nothing new saved"}${dropped.length
     ? `; taken out, as what the user said corrects them: ${dropped.map((entry) => `"${entry.note}"`).join("; ")}` : ""}. `
@@ -1096,7 +1117,7 @@ async function learnFrom(content, source) {
           content: `You keep a memory about ${who}, in notes filed under these topics:\n`
             + topics().map((topic) => `- ${topic.name}: ${topic.description}`).join("\n")
             + `\n\n${who} has given you part of a document (${source}) and asked you to save what it says. Pull out each fact worth `
-            + `having later as one self-contained sentence in the third person, naming ${who} where it is about them and naming `
+            + `having later as one self-contained note in the third person (a sentence, or more where it needs them), naming ${who} where it is about them and naming `
             + "other people and things in full, so that it makes sense on its own with the document gone. Keep exact names, numbers "
             + "and dates. One fact to a note; no headings, no summaries of the document, nothing that is only filler. Give each the "
             + "topic whose description it fits.",
@@ -1437,14 +1458,65 @@ function settleNote(t, topic, note, action) {
   emit({ type: "review", t, notes: notesFrom(t) });
 }
 
-function memoryTool(name, args, sources = null) {
+// Where a note goes. Topics are areas of the user's life, not people or
+// things: given a topic that does not exist ("Chuck"), the model had made one.
+// So the choice is put as a narrow question, among the topics there are or a
+// new broad area of life, and a person, project or thing is filed under the
+// area it belongs to. On the notes in memory this put 56 of 67 back where they
+// were (the rest were ones either topic would suit), and made a new topic only
+// for an area none covered: health, travel, money.
+const NEW_AREA = "(a new area of life)";
+async function placeTopic(name, note, description = "", { exclude = null } = {}) {
+  const held = topics().filter((topic) => topic.name !== exclude);
+  const who = cfg.userName ?? "the user";
+  try {
+    const response = await fetch(`${cfg.ollama.url}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(30_000),
+      body: JSON.stringify({
+        model: cfg.ollama.model, stream: false, think: false, keep_alive: cfg.ollama.keepAlive, options: { temperature: 0 },
+        format: {
+          type: "object",
+          properties: { topic: { type: "string", enum: [...held.map((topic) => topic.name), NEW_AREA] }, area: { type: "string" }, about: { type: "string" } },
+          required: ["topic", "area", "about"],
+        },
+        messages: [{
+          role: "system",
+          content: `Choose where a note goes in ${who}'s memory. The topics:\n${held.map((topic) => `- ${topic.name}: ${topic.description}`).join("\n")}\n\n`
+            + `topic: the one the note belongs in. A person, project, place or thing is never a topic of its own: a note about one goes in the topic for that part of ${who}'s life (a colleague under Work or People, a project under Projects). `
+            + `Choose "${NEW_AREA}" only when the note is about a broad area of ${who}'s life that no topic covers, such as health, travel or money; then give that area's name, short and general, and one line saying what belongs in it.`,
+        }, { role: "user", content: note }], // the note alone: a suggested topic only pulled the choice toward it
+      }),
+    });
+    const chosen = JSON.parse((await response.json()).message.content);
+    if (chosen.topic !== NEW_AREA) return { name: chosen.topic };
+    const area = String(chosen.area ?? "").trim();
+    const same = held.find((topic) => slug(topic.name) === slug(area));
+    if (same) return { name: same.name };
+    if (slug(area)) return { name: area, description: String(chosen.about ?? "").trim(), made: true };
+  } catch (error) {
+    console.error(`memory: could not choose a topic: ${error.message}`);
+  }
+  // Failing that, the topic suggested if there is one, so nothing is lost or scattered.
+  return { name: held.find((topic) => slug(topic.name) === slug(name))?.name ?? held[0]?.name ?? name };
+}
+
+// Topics made by the gate rather than by the user, which the gardener may fold away.
+function madeByMorgan(name) {
+  const garden = gardenState();
+  garden.made = [...new Set([...(garden.made ?? []), slug(name)])];
+  saveGarden(garden);
+}
+
+async function memoryTool(name, args, sources = null) {
   const topic = String(args.topic ?? "").trim();
   if (name === "end_interview") {
     interviewing = false;
     emit({ type: "interview", active: false });
     return "The interview is over.";
   }
-  if (!slug(topic)) return "No topic given.";
+  if (!slug(topic) && name !== "remember") return "No topic given."; // a note with no topic is placed by the gate
   const existing = readTopic(topic);
   if (name === "recall") {
     // What was read goes with the card, so it can be opened and looked at.
@@ -1456,6 +1528,15 @@ function memoryTool(name, args, sources = null) {
   if (name === "remember") {
     const note = String(args.note ?? "").trim();
     if (!note) return "No note given.";
+    // The topic is the gate's choice, not the model's; a new one only for a new area of life.
+    // A topic the user named in their own words is theirs: used, or made, as asked, and never folded away.
+    const named = slug(topic) && new RegExp(`\\b${topic.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(turnText);
+    if (!args.placed && named) return memoryTool("remember", { ...args, topic: readTopic(topic)?.name ?? topic, placed: true }, sources);
+    if (!args.placed) {
+      const place = await placeTopic(topic, note, String(args.description ?? ""));
+      if (place.made) madeByMorgan(place.name);
+      return memoryTool("remember", { ...args, topic: place.name, description: place.description ?? args.description ?? "", placed: true }, sources);
+    }
     const plainNote = (text) => words(String(text).replace(/\(\d{4}-\d{2}-\d{2}\)\s*$/, "")).join(" ");
     if (existing?.notes.some((held) => plainNote(held) === plainNote(note))) return "Already saved, word for word; nothing added.";
     const today = new Date().toISOString().slice(0, 10);
@@ -1494,6 +1575,226 @@ function memoryTool(name, args, sources = null) {
   }
   return `Unknown tool: ${name}`;
 }
+
+
+// ---------------------------------------------------------------- the gardener
+//
+// Memory kept in order without the user's help. Once a day, when nothing is
+// going on, the daemon: makes one note of two that say the same thing (found
+// by likeness, decided by a narrow question, since likeness alone could not
+// tell two lenses from one lens said twice); folds a topic it made itself back
+// into the others once it has stayed small for a fortnight; and splits a topic
+// grown past forty notes into clearer parts. Topics the user made, and the
+// starter topics, are never folded away. Every run is backed up first, said in
+// the log, listed in settings, and can be undone.
+
+const GARDEN = join(MEMORY, "garden.sealed");
+const GARDEN_BACKUPS = join(MEMORY, "garden-backups");
+const DAY = 86_400_000;
+
+function gardenState() {
+  try { return JSON.parse(readSealed(GARDEN)); } catch { return { made: [], runs: [] }; }
+}
+function saveGarden(garden) {
+  mkdirSync(MEMORY, { recursive: true });
+  writeSealed(GARDEN, JSON.stringify(garden));
+}
+
+const bareNote = (note) => String(note).replace(/\s*\(\d{4}-\d{2}-\d{2}\)\s*$/, "");
+const likeness = (a, b) => { let sum = 0; for (let i = 0; i < a.length; i++) sum += a[i] * b[i]; return sum; };
+
+async function askOllama(system, user, properties) {
+  const response = await fetch(`${cfg.ollama.url}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    signal: AbortSignal.timeout(120_000),
+    body: JSON.stringify({
+      model: cfg.ollama.model, stream: false, think: false, keep_alive: cfg.ollama.keepAlive, options: { temperature: 0 },
+      format: { type: "object", properties, required: Object.keys(properties) },
+      messages: [{ role: "system", content: system }, { role: "user", content: user }],
+    }),
+  });
+  if (!response.ok) throw new Error(`Ollama answered ${response.status}`);
+  return JSON.parse((await response.json()).message.content);
+}
+
+async function tend({ force = false } = {}) {
+  const garden = gardenState();
+  if (!force && Date.now() - (garden.last ?? 0) < DAY) return null;
+  const who = cfg.userName ?? "the user";
+  const today = new Date().toISOString().slice(0, 10);
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const backup = join(GARDEN_BACKUPS, stamp);
+  mkdirSync(backup, { recursive: true });
+  for (const file of readdirSync(MEMORY).filter((name) => name.endsWith(".topic"))) copyFileSync(join(MEMORY, file), join(backup, file));
+  const actions = [];
+
+  // One note of two that say the same thing.
+  await indexNotes();
+  for (const held of topics()) {
+    const topic = readTopic(held.name);
+    const gone = new Set();
+    const pairs = [];
+    for (let i = 0; i < topic.notes.length; i++) {
+      for (let j = i + 1; j < topic.notes.length; j++) {
+        const a = noteVectors.get(topic.notes[i]);
+        const b = noteVectors.get(topic.notes[j]);
+        if (a && b && likeness(a, b) >= 0.85) pairs.push({ i, j, score: likeness(a, b) });
+      }
+    }
+    for (const { i, j } of pairs.sort((x, y) => y.score - x.score)) {
+      if (gone.has(i) || gone.has(j)) continue;
+      const [first, second] = [topic.notes[i], topic.notes[j]];
+      let answer;
+      try {
+        answer = await askOllama(
+          `Two notes from a memory about ${who}. same: true only if they are about the same one thing, so that a single note could say `
+            + "everything either says (one repeats, restates or updates the other). False when they are separate facts, even closely "
+            + "related ones (two different lenses, two different preferences, a job and a boss). merged: when same, one note in the "
+            + `third person naming ${who}, keeping every detail of both, the newer wording where they differ; otherwise empty.`,
+          `1. ${bareNote(first)}\n2. ${bareNote(second)}`,
+          { same: { type: "boolean" }, merged: { type: "string" } },
+        );
+      } catch (error) { console.error(`garden: ${error.message}`); continue; }
+      const merged = String(answer.merged ?? "").replace(/\s+/g, " ").trim();
+      if (!answer.same || merged.length < 8) continue;
+      topic.notes[i] = `${merged} (${today})`;
+      gone.add(j);
+      actions.push({ kind: "merged", topic: topic.name, notes: [first, second], into: topic.notes[i] });
+    }
+    if (gone.size) writeTopic({ ...topic, notes: topic.notes.filter((_, index) => !gone.has(index)) });
+  }
+
+  // A topic made here that has stayed small for a fortnight goes back into the
+  // others, but only when its notes clearly belong there: asked again with the
+  // topic out of the way, each must land in one that exists. Small is not the
+  // same as misplaced: a note that still calls for an area of its own (health,
+  // say) keeps the topic, however few its notes.
+  for (const name of garden.made ?? []) {
+    const topic = readTopic(name);
+    if (!topic) continue;
+    if (topic.notes.length >= 3 || Date.now() - statSync(topicPath(name)).mtimeMs < 14 * DAY) continue;
+    const places = [];
+    for (const note of topic.notes) places.push(await placeTopic("", bareNote(note), "", { exclude: topic.name }));
+    if (places.some((place) => place.made || !readTopic(place.name))) continue;
+    const moved = topic.notes.map((note, index) => ({ note, to: places[index].name }));
+    for (const { note, to } of moved) {
+      const into = readTopic(to);
+      writeTopic({ ...into, notes: [...into.notes, note] });
+    }
+    rmSync(topicPath(name), { force: true });
+    actions.push({ kind: "folded", topic: topic.name, description: topic.description, notes: moved });
+  }
+  garden.made = (garden.made ?? []).filter((name) => readTopic(name));
+
+  // A topic grown past forty notes, split into clearer parts.
+  for (const topic of topics().filter((held) => held.notes.length > 40)) {
+    let answer;
+    try {
+      answer = await askOllama(
+        `These are the notes under "${topic.name}" (${topic.description}) in a memory about ${who}. There are too many for one topic. `
+          + "Divide them into two to four groups, each a clear area. The first group keeps the topic's own name and is what most fits it; "
+          + "the others are new topics: give each a short, general name (an area, never a person or a single thing) and one line saying "
+          + "what belongs in it. Every note goes in exactly one group, by its number.",
+        topic.notes.map((note, index) => `${index + 1}. ${bareNote(note)}`).join("\n"),
+        { groups: { type: "array", items: { type: "object", properties: { name: { type: "string" }, description: { type: "string" }, notes: { type: "array", items: { type: "integer" } } }, required: ["name", "description", "notes"] } } },
+      );
+    } catch (error) { console.error(`garden: ${error.message}`); continue; }
+    const groups = answer.groups ?? [];
+    const placed = groups.flatMap((group) => group.notes);
+    const whole = groups.length >= 2 && placed.length === topic.notes.length && new Set(placed).size === placed.length
+      && placed.every((number) => number >= 1 && number <= topic.notes.length);
+    const clash = groups.slice(1).some((group) => !slug(group.name) || readTopic(group.name));
+    if (!whole || clash) continue;
+    writeTopic({ ...topic, notes: groups[0].notes.map((number) => topic.notes[number - 1]) });
+    for (const group of groups.slice(1)) {
+      writeTopic({ name: group.name, description: group.description, notes: group.notes.map((number) => topic.notes[number - 1]) });
+      garden.made = [...new Set([...(garden.made ?? []), slug(group.name)])];
+    }
+    actions.push({ kind: "split", topic: topic.name, into: groups.slice(1).map((group) => ({ name: group.name, description: group.description, notes: group.notes.map((number) => topic.notes[number - 1]) })) });
+  }
+
+  garden.last = Date.now();
+  if (actions.length) {
+    const t = Date.now();
+    actions.forEach((action, index) => { action.id = `${t}-${index}`; });
+    garden.runs = [{ t, backup: stamp, actions }, ...(garden.runs ?? [])].slice(0, 60);
+    console.error(`garden: ${actions.map(describeTending).join("; ")}`);
+  } else {
+    rmSync(backup, { recursive: true, force: true });
+  }
+  saveGarden(garden);
+  return { actions };
+}
+
+// One change, in a few words, for the log and the settings report.
+function describeTending(action) {
+  if (action.kind === "merged") return `made one note of two in ${action.topic}`;
+  if (action.kind === "folded") return `folded ${action.topic} into ${[...new Set(action.notes.map((entry) => entry.to))].join(", ")}`;
+  return `split ${action.topic}, making ${action.into.map((part) => part.name).join(", ")}`;
+}
+
+// Undo one change, leaving the rest of that day's tidying, and anything saved
+// since, as it is.
+function untend(id) {
+  const garden = gardenState();
+  const action = (garden.runs ?? []).flatMap((run) => run.actions).find((entry) => entry.id === id);
+  if (!action) throw new Error("There is no such change to undo.");
+  if (action.undone) throw new Error("That change has already been undone.");
+  const without = (topic, notes) => ({ ...topic, notes: topic.notes.filter((note) => !notes.includes(note)) });
+  if (action.kind === "merged") {
+    const topic = readTopic(action.topic);
+    const at = topic?.notes.indexOf(action.into) ?? -1;
+    if (at < 0) throw new Error("The merged note has since been changed or moved, so the two cannot be put back.");
+    topic.notes.splice(at, 1, ...action.notes);
+    writeTopic(topic);
+  } else if (action.kind === "folded") {
+    if (readTopic(action.topic)) throw new Error(`There is a topic called ${action.topic} again, so it cannot be brought back.`);
+    for (const to of new Set(action.notes.map((entry) => entry.to))) {
+      const topic = readTopic(to);
+      if (topic) writeTopic(without(topic, action.notes.filter((entry) => entry.to === to).map((entry) => entry.note)));
+    }
+    writeTopic({ name: action.topic, description: action.description ?? "", notes: action.notes.map((entry) => entry.note) });
+    garden.made = [...new Set([...(garden.made ?? []), slug(action.topic)])];
+  } else {
+    // Everything in the parts goes back, notes saved there since included.
+    const whole = readTopic(action.topic) ?? { name: action.topic, description: "", notes: [] };
+    for (const part of action.into) {
+      const now = readTopic(part.name);
+      if (!now) continue;
+      whole.notes.push(...now.notes);
+      rmSync(topicPath(part.name), { force: true });
+    }
+    writeTopic(whole);
+  }
+  action.undone = Date.now();
+  saveGarden(garden);
+  console.error(`garden: undid "${describeTending(action)}"`);
+  return {};
+}
+
+// The report for settings: each day's changes, newest first.
+function tendingReport() {
+  const days = new Map();
+  for (const run of gardenState().runs ?? []) {
+    const day = isoDay(run.t);
+    for (const action of run.actions) {
+      (days.get(day) ?? days.set(day, []).get(day)).push({
+        id: action.id, kind: action.kind, topic: action.topic, said: describeTending(action), undone: Boolean(action.undone),
+        detail: action.kind === "merged" ? `${action.notes.map(bareNote).join("  +  ")}  →  ${bareNote(action.into)}`
+          : action.kind === "folded" ? action.notes.map((entry) => `${bareNote(entry.note)}  →  ${entry.to}`).join("\n")
+            : action.into.map((part) => `${part.name}: ${part.notes.length} notes`).join("\n"),
+      });
+    }
+  }
+  return [...days].map(([day, changes]) => ({ day, when: new Date(`${day}T12:00:00`).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }), changes }));
+}
+
+// Once a day, when no conversation is going on.
+setInterval(() => {
+  if (!BRAIN || state !== "idle" || history.length || Date.now() - lastActivity < 30 * 60_000) return;
+  tend().catch((error) => console.error(`garden: ${error.message}`));
+}, 30 * 60_000).unref();
 
 // ---------------------------------------------------------------- MCP servers
 
@@ -2093,7 +2394,7 @@ async function fileAway(turns, from = []) {
       messages.push(reply);
       if (!reply.tool_calls?.length) break;
       for (const call of reply.tool_calls) {
-        messages.push({ role: "tool", tool_name: call.function.name, content: memoryTool(call.function.name, call.function.arguments ?? {}, from) });
+        messages.push({ role: "tool", tool_name: call.function.name, content: await memoryTool(call.function.name, call.function.arguments ?? {}, from) });
       }
     }
   } catch (error) {
@@ -2139,6 +2440,7 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
   // conversation carries their contents; the transcript keeps only their names.
   const names = [...files.map((file) => basename(file)), ...given.map((file) => file.name)];
   askedAt = Date.now();
+  turnText = text;
   emit({ type: "user", text: names.length ? `${text}\n\n${names.map((name) => `📎 ${name}`).join("\n")}` : text });
   setState("thinking");
   // What kind of turn this is, decided once and acted on below. A bare yes is
@@ -2475,7 +2777,7 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
           result = "Not saved. This turn was answered from a lookup, and what a lookup returns is how things stand today, not "
             + "something to remember about the user. Only what they tell you about themselves is.";
         } else if (call.function.name !== "consult_oracle") {
-          result = memoryTool(call.function.name, call.function.arguments ?? {});
+          result = await memoryTool(call.function.name, call.function.arguments ?? {});
         } else {
           if (!spoke) enqueue(cfg.consultLine);
           setState("consulting");
@@ -3530,6 +3832,7 @@ const admin = createAdmin({
   topics, readTopic, writeTopic, topicPath, slug,
   documents, documentPath, pictures, picturePath,
   mcpAll, reconnectMcp, enroll, forgetVoice, voicesStatus, logLines,
+  garden: { report: tendingReport, run: () => tend({ force: true }), undo: untend },
   // Where this machine's Morgan lives: here, or on a server it is a client of.
   client: {
     get: () => ({ role: ROLE, server: CLIENT.server ?? "", device: CLIENT.device ?? hostname(), hasKey: Boolean(CLIENT.key), connected: Boolean(homeLink) }),
@@ -3800,7 +4103,8 @@ async function clientCommand(command, rest, line, reply) {
     const attached = await readAttachments((turnOf.files ?? []).map(String));
     line = `ask ${JSON.stringify({ text: String(turnOf.text ?? ""), attached })}`;
   }
-  const answer = await remote(line);
+  // Settings may set the server working for a while (a tidying of memory): it is given longer.
+  const answer = await remote(line, command === "admin" ? 300_000 : 45_000);
   if (command === "status" && answer?.ok) {
     // The server's state, with what this client hears and speaks with.
     Object.assign(answer, { role: "client", server: CLIENT.server, stt: Boolean(cfg.stt), tts: Boolean(cfg.tts), wakeWord: cfg.wakeWord,

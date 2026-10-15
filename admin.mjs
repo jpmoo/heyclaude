@@ -73,6 +73,11 @@ export function createAdmin(d) {
       })),
     }),
 
+    // The gardener: what it changed, day by day; one change undone; a tidying now.
+    "memory.garden.report": () => ({ days: d.garden.report() }),
+    "memory.garden.undo": ({ id }) => d.garden.undo(String(id)),
+    "memory.garden.run": async () => ({ changes: (await d.garden.run())?.actions.length ?? 0, days: d.garden.report() }),
+
     "memory.list": () => ({
       topics: d.topics().map((topic) => ({ name: topic.name, description: topic.description, notes: topic.notes })),
       documents: d.documents().map((kept) => ({ title: kept.title, source: kept.source, t: kept.t, size: kept.text.length })),

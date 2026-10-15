@@ -86,7 +86,7 @@ local function set(values, said: string?)
 end
 
 local NEEDS = {
-  memory = { "memory.list", "config.get" },
+  memory = { "memory.list", "config.get", "memory.garden.report" },
   voice = { "voice.list", "voices.status", "config.get" },
   listening = { "config.get", "reminders.list" },
   files = { "config.get" },
@@ -402,6 +402,37 @@ local function memoryTab()
     table.insert(pictures, hint("None. Say “remember what I look like” or “this is my dog” while the camera can see."))
   end
   table.insert(out, card("Pictures, for recognising people and things", pictures))
+
+  -- What the gardener changed, day by day, each change undoable on its own.
+  local tidied = {}
+  for dayIndex, day in ipairs((D["memory.garden.report"] or {}).days or {}) do
+    table.insert(tidied, ui.label({ key = `gd{dayIndex}`, text = day.when, color = "on_surface", fontSize = 12, fontWeight = "bold" }))
+    for _, item in ipairs(day.changes or {}) do
+      table.insert(tidied, ui.row({ key = `gc{item.id}`, gap = 10, align = "start" }, {
+        ui.column({ gap = 2, flexGrow = 1 }, {
+          ui.label({ text = item.said, color = if item.undone then "on_surface_variant" else "on_surface", fontSize = 12, maxWidth = WIDTH - 200 }),
+          hint(item.detail or ""),
+        }),
+        if item.undone then ui.label({ text = "Undone", color = "on_surface_variant", fontSize = 11 })
+        else ui.button({ text = "Undo", glyph = "arrow-back-up", variant = "ghost", controlSize = "sm", onClick = function()
+          change("memory.garden.undo", { id = item.id }, "Undone.")
+        end }),
+      }))
+    end
+  end
+  if #tidied == 0 then
+    table.insert(tidied, hint(`Nothing tidied yet. Once a day, when nothing is going on, {who()} merges notes that say the same thing, folds small topics it made back into the others, and splits topics grown too big. Topics you made are never folded away.`))
+  end
+  table.insert(out, card("Kept tidy automatically", {
+    ui.row({ gap = 8 }, {
+      ui.button({ text = "Tidy now", glyph = "sparkles", variant = "secondary", controlSize = "sm", onClick = function()
+        status = "Tidying…"
+        render()
+        change("memory.garden.run", {}, "Tidied.")
+      end }),
+    }),
+    ui.column({ gap = 8 }, tidied),
+  }))
 
   local config = D["config.get"] or {}
   table.insert(out, card("Earlier conversations", {
