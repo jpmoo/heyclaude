@@ -902,6 +902,10 @@ setInterval(() => {
 }, 1000).unref();
 
 
+// Source code is never read for facts about the user.
+const CODE = /\.(m?[jt]sx?|cjs|py|rb|go|rs|java|kt|swift|c|cc|cpp|h|hpp|cs|php|lua|luau|sh|bash|fish|sql|css|scss|html?|vue|svelte|json|ya?ml|toml|lock)$/i;
+let documentTurn = false; // the turn in hand was about keeping a document, not a fact
+
 async function keepIntent(text, files, likely, given = []) {
   const folders = DESK ? cfg.folders.length > 0 : clientCan("files");
   if (!likely || !(files.length || given.length || lastRead || folders)) return "";
@@ -938,6 +942,14 @@ async function keepIntent(text, files, likely, given = []) {
     return "";
   }
   if (!intent.keep && !intent.extract) return "";
+  // Only ever a document the user attached, named, or that was just read. Told
+  // to "remember that he is my boss", this took a fact for a document, went
+  // looking through the folders for a file that half-matched a title it had
+  // made up, and filed 99 notes from a source file.
+  const named = intent.file.trim() && !/^(it|this|that|the (file|document|doc))$/i.test(intent.file.trim());
+  const justRead = lastRead && Date.now() - lastRead.t < 15 * 60_000;
+  if (!files.length && !given.length && !named && !justRead) return "";
+  documentTurn = true;
   const title = intent.title.trim() || "Document";
   // On a server, the folders and their files are the client's.
   const allowedHere = (path) => (DESK ? allowed(path) : askClient("allowed", { path }).catch(() => null));
@@ -947,9 +959,8 @@ async function keepIntent(text, files, likely, given = []) {
     let path = files[0] ? home(files[0]) : null;
     let content = null;
     if (!path && given[0]) { path = given[0].name; content = given[0].content; }
-    if (!path && intent.file) path = await allowedHere(intent.file) ?? await findHere(`${intent.file} ${title}`);
-    if (!path && lastRead && Date.now() - lastRead.t < 15 * 60_000) { path = lastRead.path; content = lastRead.text; }
-    if (!path && folders) path = await findHere(title);
+    if (!path && named) path = await allowedHere(intent.file) ?? await findHere(intent.file);
+    if (!path && justRead) { path = lastRead.path; content = lastRead.text; }
     if (!path) return " You were asked to keep a document, but which file is meant could not be worked out, so nothing has been kept. Ask them which file.";
     // A folder named in place of the file: the file is looked for in it, by the words used for it.
     try { content ??= await readHere(path); } catch (error) {
@@ -965,7 +976,9 @@ async function keepIntent(text, files, likely, given = []) {
       keepDocument(title, path, content);
       did("keep_document", { title, file: path }, `Done, just now: the full text of ${basename(path)} is kept under the title "${title}".`);
     }
-    if (intent.extract) {
+    if (intent.extract && CODE.test(path)) {
+      did("save_document_as_memories", { file: path }, `Nothing was saved: ${basename(path)} is program source code, not something to learn facts about the user from.`);
+    } else if (intent.extract) {
       const filed = await learnFrom(content, basename(path));
       const total = Object.values(filed).reduce((sum, notes) => sum + notes.length, 0);
       did("save_document_as_memories", { file: path }, total
@@ -978,6 +991,80 @@ async function keepIntent(text, files, likely, given = []) {
   } catch (error) {
     return ` You were asked to keep a document, but it failed (${error.message.split("\n")[0]}), so nothing has been kept. Say so.`;
   }
+}
+
+// Asked to remember something, the model said it had when it had not, twice
+// over, and left a note that contradicted what it was told standing. So it is
+// done here: what the user wants remembered is written as notes and filed, and
+// any held note it corrects, or that the user says not to keep, is taken out.
+async function rememberFacts(text) {
+  // The held notes nearest to what was said: those a correction may be about.
+  let near = [];
+  try {
+    const all = await indexNotes();
+    const query = await transcript.embed(`search_query: ${text}`);
+    near = all.filter((entry) => noteVectors.has(entry.note)).map((entry) => {
+      const vector = noteVectors.get(entry.note);
+      let score = 0;
+      for (let i = 0; i < query.length; i++) score += query[i] * vector[i];
+      return { ...entry, score };
+    }).sort((a, b) => b.score - a.score).slice(0, 10);
+  } catch { /* nothing to correct, then */ }
+  const who = cfg.userName ?? "the user";
+  const before = history.filter((message) => message.role !== "tool" && message.content).slice(-5, -1)
+    .map((message) => `${message.role === "user" ? "User" : cfg.name}: ${message.content.slice(0, 400)}`).join("\n");
+  let answer;
+  try {
+    const response = await fetch(`${cfg.ollama.url}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(30_000),
+      body: JSON.stringify({
+        model: cfg.ollama.model, stream: false, think: false, keep_alive: cfg.ollama.keepAlive, options: { temperature: 0 },
+        format: {
+          type: "object",
+          properties: {
+            notes: { type: "array", items: { type: "object", properties: { topic: { type: "string" }, note: { type: "string" } }, required: ["topic", "note"] } },
+            replaces: { type: "array", items: { type: "integer" } },
+          },
+          required: ["notes", "replaces"],
+        },
+        messages: [{
+          role: "system",
+          content: `${who} has asked an assistant to remember something. Write down what they want remembered.\n`
+            + `notes: each fact as one complete, self-contained sentence in the third person, naming ${who} (\"${who}'s boss is Chuck, `
+            + "the Superintendent of ...\"), with the names, roles and details they gave, and nothing they did not say. Use what was "
+            + "said just before to know who or what \"he\", \"it\" or \"that\" is. Give each a topic from this list, or a short new one "
+            + `if none fits:\n${topics().map((topic) => `- ${topic.name}: ${topic.description}`).join("\n")}\n`
+            + "replaces: the numbers of the held notes below that the new notes correct or contradict, or that the user says should not "
+            + "be kept. Empty if none.\n"
+            + `Held notes:\n${near.map((entry, index) => `${index + 1}. [${entry.topic}] ${entry.note}`).join("\n") || "(none)"}`,
+        }, { role: "user", content: `${before ? `Said just before:\n${before}\n\n` : ""}What ${who} said now:\n${text}` }],
+      }),
+    });
+    answer = JSON.parse((await response.json()).message.content);
+  } catch (error) {
+    console.error(`remember: ${error.message}`);
+    return;
+  }
+  const notes = (answer.notes ?? []).map((entry) => ({ topic: String(entry.topic ?? "").trim(), note: String(entry.note ?? "").replace(/\s+/g, " ").trim() }))
+    .filter((entry) => slug(entry.topic) && entry.note.length > 3);
+  // A note "replaced" by the very same words is simply kept.
+  const plainNote = (text) => words(String(text).replace(/\(\d{4}-\d{2}-\d{2}\)\s*$/, "")).join(" ");
+  const saying = new Set(notes.map((entry) => plainNote(entry.note)));
+  const dropped = [...new Set(answer.replaces ?? [])].map((number) => near[number - 1]).filter((entry) => entry && !saying.has(plainNote(entry.note)));
+  if (!notes.length && !dropped.length) return;
+  for (const entry of dropped) {
+    const topic = readTopic(entry.topic);
+    if (!topic) continue;
+    writeTopic({ ...topic, notes: topic.notes.filter((note) => note !== entry.note) });
+    emit({ type: "memory", topic: entry.topic, note: entry.note.replace(/\s*\(\d{4}-\d{2}-\d{2}\)\s*$/, ""), removed: true });
+  }
+  for (const entry of notes) memoryTool("remember", entry);
+  did("remember", { notes: notes.map((entry) => entry.note) }, `Done, just now, and nothing more to do: ${notes.length
+    ? `saved ${notes.map((entry) => `"${entry.note}" under ${entry.topic}`).join("; ")}` : "nothing new saved"}${dropped.length
+    ? `; taken out, as what the user said corrects them: ${dropped.map((entry) => `"${entry.note}"`).join("; ")}` : ""}. `
+    + "Tell the user in a sentence what is now remembered (and what was taken out). Do not call remember again for these.");
 }
 
 // Read a document through and file what it says as notes. The model is asked
@@ -1242,8 +1329,9 @@ const memoryInFull = () => memoryText().length <= cfg.memoryInFull;
 const noteVectors = new Map(); // note text -> its embedding
 let picked = ""; // the notes chosen for the turn in hand
 
-async function pickNotes(text) {
-  if (memoryInFull()) return "";
+// Every note in memory, each with its meaning worked out (once, and kept for as
+// long as the daemon runs).
+async function indexNotes() {
   const all = topics().flatMap((topic) => topic.notes.map((note) => ({ topic: topic.name, note })));
   // Embeddings are made once per note and kept for as long as the daemon runs.
   const missing = [...new Set(all.map((entry) => entry.note).filter((note) => !noteVectors.has(note)))];
@@ -1263,6 +1351,12 @@ async function pickNotes(text) {
       noteVectors.set(batch[index], Float32Array.from(vector, (x) => x / norm));
     });
   }
+  return all;
+}
+
+async function pickNotes(text) {
+  if (memoryInFull()) return "";
+  const all = await indexNotes();
   const query = await transcript.embed(`search_query: ${text}`);
   const wanted = new Set(words(text).filter((word) => word.length >= 4));
   const scored = all.map((entry) => {
@@ -1362,6 +1456,8 @@ function memoryTool(name, args, sources = null) {
   if (name === "remember") {
     const note = String(args.note ?? "").trim();
     if (!note) return "No note given.";
+    const plainNote = (text) => words(String(text).replace(/\(\d{4}-\d{2}-\d{2}\)\s*$/, "")).join(" ");
+    if (existing?.notes.some((held) => plainNote(held) === plainNote(note))) return "Already saved, word for word; nothing added.";
     const today = new Date().toISOString().slice(0, 10);
     writeTopic({
       name: existing?.name ?? topic,
@@ -2188,8 +2284,13 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
     }
     await reminderIntent(text, sorted.reminder);
     if (mine !== turn) return;
+    documentTurn = false;
     seen += await keepIntent(text, files, sorted.keep, given);
     if (mine !== turn) return;
+    if (sorted.keep && !documentTurn) {
+      await rememberFacts(text);
+      if (mine !== turn) return;
+    }
     // Asked about earlier talk ("when did we last speak?"), the model answered
     // from its head and made a day up. What the record holds is put in front
     // of it: the latest exchanges by time, and those that match by meaning.

@@ -341,7 +341,8 @@ function hear(line) {
     case "result": if (lastTool?.isConnected && e.text) { const card = lastTool; const spot = document.createComment(""); card.replaceWith(spot); spot.replaceWith(fold(card, e.text)); lastTool = null; } break;
     case "recall": act("book", "Read from memory", String(e.topic ?? ""), e.body); break;
     case "look": act(e.source === "camera" ? "camera" : e.source === "clipboard" ? "clipboard" : "device-desktop", `Looked at the ${e.source}`, ""); break;
-    case "memory": act(e.rewritten ? "brain" : "bookmark", e.rewritten ? "Tidied memory" : `Remembered in ${e.topic}`, e.rewritten ? String(e.topic ?? "") : String(e.note ?? ""), e.body); break;
+    case "memory": if (e.removed) { act("eraser", `Taken out of ${e.topic}`, String(e.note ?? "")); break; }
+      act(e.rewritten ? "brain" : "bookmark", e.rewritten ? "Tidied memory" : `Remembered in ${e.topic}`, e.rewritten ? String(e.topic ?? "") : String(e.note ?? ""), e.body); break;
     case "confirm": {
       const [, title, detail] = toolCard(e.name, e.args);
       if (e.done === undefined) act("hand-stop", `Waiting for your yes: ${title.toLowerCase()}`, detail);

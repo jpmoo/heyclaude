@@ -207,7 +207,7 @@ if (args[0] === "chat") {
     else if (event.type === "oracle") show(dim(`the Oracle answered: ${event.text}`));
     else if (event.type === "look") show(dim(`looking at the ${event.source}`));
     else if (event.type === "confirm") show(dim(event.done === undefined ? `proposed ${event.name} ${JSON.stringify(event.args ?? {})}` : event.done ? `carried out ${event.name}` : `dropped ${event.name}`));
-    else if (event.type === "memory") show(dim(event.rewritten ? `reorganized ${event.topic}` : `remembered under ${event.topic}: ${event.note}`));
+    else if (event.type === "memory") show(dim(event.removed ? `took out of ${event.topic}: ${event.note}` : event.rewritten ? `reorganized ${event.topic}` : `remembered under ${event.topic}: ${event.note}`));
     else if (event.type === "recall") show(dim(`recalling ${event.topic}`));
     else if (event.type === "error") show(`error: ${event.message}`);
     else if (event.type === "new") { process.stdout.write("\x1b[2J\x1b[H"); input.prompt(true); }

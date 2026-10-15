@@ -238,7 +238,9 @@ local function onLine(line: string)
       act("circle-x", `Not done: {title:lower()}`, "")
     end
   elseif event.type == "memory" then
-    if event.rewritten then
+    if event.removed then
+      act("eraser", `Taken out of {event.topic}`, tostring(event.note or ""))
+    elseif event.rewritten then
       act("brain", "Tidied memory", tostring(event.topic or ""), if type(event.body) == "string" then event.body else nil)
     else
       act("bookmark", `Remembered in {event.topic}`, tostring(event.note or ""))
