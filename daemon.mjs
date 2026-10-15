@@ -883,7 +883,8 @@ function fire(entry) {
   began ||= lastActivity;
   history.push({ role: "assistant", content: line });
   emit({ type: "assistant", text: line });
-  if (!cfg.tts) return;
+  // A server has no voice of its own, but its clients do: there it always goes out as sentences to speak.
+  if (!cfg.tts && DESK) return;
   quiet = false;
   spokenTurn = true;
   setState("thinking");
@@ -894,6 +895,8 @@ function fire(entry) {
 
 setInterval(() => {
   if (!BRAIN || state !== "idle" || active) return;
+  // A server holds a reminder until some client is there to hear it; it then goes off, late if it must be.
+  if (ROLE === "server" && !links.size) return;
   const entry = due.filter((candidate) => candidate.at <= Date.now()).sort((a, b) => a.at - b.at)[0];
   if (entry) fire(entry);
 }, 1000).unref();
