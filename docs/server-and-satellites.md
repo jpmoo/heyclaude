@@ -193,6 +193,10 @@ When the laptop and the Dot both hear "Hey Morgan", the server takes `wake`s
 for 300 ms, keeps the one with the higher score, and sends `stand-down` to the
 rest. The answer plays on the device that won. Typed turns never arbitrate.
 
+A reminder or timer going off is different: every connected client that can
+speak says it, at once (decided: that is wanted). A turn's answer plays only on
+the device it was asked on.
+
 ## Corrections to the analysis this plan grew from
 
 Two notes went into this plan: mine, and a review of it. These are settled:
