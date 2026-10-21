@@ -26,6 +26,10 @@ config.update({"wakeWord": None, "interruptWord": None, "tts": None, "engine": "
                "router": sys.argv[1] == "true"})
 if not os.environ.get("SERVICES"):
     config["mcpServers"] = {}  # the user's own services are left alone unless asked for
+if os.environ.get("SIGHT"):
+    config["sight"] = json.loads(os.environ["SIGHT"])
+if os.environ.get("CAMERA"):
+    config["camera"] = os.environ["CAMERA"]
 if os.environ.get("FOLDERS"):
     config["folders"] = json.loads(os.environ["FOLDERS"])
 if os.environ.get("IDLE"):

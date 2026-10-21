@@ -8,7 +8,7 @@
 // new, status, watch) and streams events.
 
 import { ROLE, CLIENT, CLIENT_FILE, MIRROR } from "./env.mjs"; // first: which part this copy plays, and where things are kept
-import { execFile, spawn } from "node:child_process";
+import { execFile, spawn, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import { connect, createServer } from "node:net";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, watchFile, writeFileSync } from "node:fs";
@@ -457,10 +457,27 @@ const run = promisify(execFile);
 const SIGHT = {
   screen: { tool: "look_at_screen", what: "screenshot", hint: "look_at_screen shows you the window they are working in" },
   clipboard: { tool: "look_at_clipboard", what: "copied image", hint: "look_at_clipboard shows you what they last copied" },
-  camera: { tool: "look_at_camera", what: "photo from the laptop's camera", hint: "look_at_camera shows you what is in front of the laptop, usually them" },
+  camera: { tool: "look_at_camera", what: "photo from the camera", hint: "look_at_camera shows you what is in front of the device, usually them" },
 };
 
-const sightTools = () => (DESK ? cfg.sight : cfg.sight.filter((source) => clientCan(`sight:${source}`))).map((source) => ({
+// What this machine can actually look at: a camera device, and a desktop with
+// the tools for its screen and clipboard. Settings say what is allowed; this
+// says what is there. A Pi in a speaker has neither, whatever the settings say.
+const hasCommand = (name) => spawnSync("sh", ["-c", `command -v ${name}`], { stdio: "ignore" }).status === 0;
+const DESKTOP_TOOLS = { grim: hasCommand("grim"), hyprctl: hasCommand("hyprctl"), wlPaste: hasCommand("wl-paste"), ffmpeg: hasCommand("ffmpeg") };
+function present(source) {
+  const desktop = Boolean(process.env.WAYLAND_DISPLAY) && existsSync(join(RUNTIME, process.env.WAYLAND_DISPLAY));
+  if (source === "camera") return DESKTOP_TOOLS.ffmpeg && existsSync(cfg.camera);
+  if (source === "screen") return desktop && DESKTOP_TOOLS.grim && DESKTOP_TOOLS.hyprctl;
+  if (source === "clipboard") return desktop && DESKTOP_TOOLS.wlPaste;
+  return false;
+}
+
+// What can be looked at for the turn in hand: on a machine with a desk, what is
+// both allowed and there; on a server, what the device the turn came from can see.
+const seeable = () => (DESK ? cfg.sight.filter(present) : cfg.sight.filter((source) => (links.get(turnFrom)?.can ?? []).includes(`sight:${source}`)));
+
+const sightTools = () => seeable().map((source) => ({
   type: "function",
   function: {
     name: SIGHT[source].tool,
@@ -658,8 +675,10 @@ async function rememberPicture(args) {
 // seeing is put to a narrow yes-or-no question first, and the looking and the
 // saving are done here, before the model is asked for its answer.
 
+// Which of all the kinds of looking the message asks for, whether or not this
+// device can do it: a request it cannot meet is answered as such, not ignored.
 async function sightIntent(text, likely) {
-  if (!likely || !(DESK ? cfg.sight : cfg.sight.filter((source) => clientCan(`sight:${source}`))).length) return null;
+  if (!likely) return null;
   try {
     const response = await fetch(`${cfg.ollama.url}/api/chat`, {
       method: "POST",
@@ -673,7 +692,7 @@ async function sightIntent(text, likely) {
         format: {
           type: "object",
           properties: {
-            look: { type: "string", enum: ["none", ...cfg.sight] },
+            look: { type: "string", enum: ["none", ...Object.keys(SIGHT)] },
             remember: { type: "boolean" },
             label: { type: "string" },
           },
@@ -681,8 +700,8 @@ async function sightIntent(text, likely) {
         },
         messages: [{
           role: "system",
-          content: "A user is speaking to a voice assistant that can look, on request, at: "
-            + `${cfg.sight.map((source) => `${source} (${SIGHT[source].hint.replace(/^\S+ shows you /, "")})`).join("; ")}. `
+          content: "A user is speaking to a voice assistant that may be able to look, on request, at: "
+            + `${Object.keys(SIGHT).map((source) => `${source} (${SIGHT[source].hint.replace(/^\S+ shows you /, "")})`).join("; ")}. `
             + "Decide what the user's message asks for. look: which of those the assistant must look at right now to do as asked, "
             + "or none if the message is not a request to look at something present (talk about pictures, screens or seeing in "
             + "general is none). remember: true only if the user asks for a picture to be kept so that someone or something can be "
@@ -692,7 +711,7 @@ async function sightIntent(text, likely) {
       }),
     });
     const intent = JSON.parse((await response.json()).message.content);
-    return cfg.sight.includes(intent.look) ? intent : null;
+    return intent.look in SIGHT ? intent : null;
   } catch (error) {
     console.error(`sight: ${error.message}`);
     return null;
@@ -2646,7 +2665,13 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
     }
     const intent = await sightIntent(text, sorted.look);
     if (mine !== turn) return;
-    if (intent) {
+    if (intent && !seeable().includes(intent.look)) {
+      // Asked to look at something this device cannot see: said plainly, never made up.
+      const why = !cfg.sight.includes(intent.look) ? `looking at the ${intent.look} is turned off in settings`
+        : intent.look === "camera" ? "this device has no camera" : `this device has no ${intent.look} to look at`;
+      did(SIGHT[intent.look].tool, { question: text }, `Nothing was looked at: ${why}. Tell the user so in a sentence `
+        + `(for a missing camera: "I don't have access to a camera on this device."), and do not describe or guess at anything.`);
+    } else if (intent) {
       emit({ type: "look", source: intent.look });
       const view = await look(intent.look, { question: text });
       if (mine !== turn) return;
@@ -3957,8 +3982,9 @@ const clientCan = (ability) => [...links.values()].some((device) => device.can.i
 
 function askClient(name, args = {}, wait = 60_000) {
   const able = [...links.entries()].filter(([, device]) => device.can.includes(name === "capture" ? `sight:${args.source}` : "files"));
-  const chosen = able.find(([link]) => link === turnFrom) ?? able[0];
-  if (!chosen) return Promise.reject(new Error(name === "capture" ? `no connected device can see its ${args.source}` : "no connected device has folders it may read"));
+  // Looking is done by the device that was asked, never another in some other room; files may come from any.
+  const chosen = name === "capture" ? able.find(([link]) => link === turnFrom) : able.find(([link]) => link === turnFrom) ?? able[0];
+  if (!chosen) return Promise.reject(new Error(name === "capture" ? `this device has no ${args.source} to look at` : "no connected device has folders it may read"));
   const [link] = chosen;
   return new Promise((resolve, reject) => {
     const id = ++nextAsk;
@@ -4047,7 +4073,7 @@ async function connectHome() {
 }
 
 // What this client can do for the server: look through what its settings let it, and read its folders.
-const abilities = () => [...cfg.sight.map((source) => `sight:${source}`), ...(cfg.folders.length ? ["files"] : [])];
+const abilities = () => [...cfg.sight.filter(present).map((source) => `sight:${source}`), ...(cfg.folders.length ? ["files"] : [])];
 
 // Something the server asked of this machine, done here and answered.
 async function doForServer(link, { id, name, args = {} }) {

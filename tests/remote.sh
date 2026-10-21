@@ -35,6 +35,8 @@ if os.environ.get("FOLDERS"):
     config["folders"] = json.loads(os.environ["FOLDERS"])
 if os.environ.get("SIGHT"):
     config["sight"] = json.loads(os.environ["SIGHT"])
+if os.environ.get("CAMERA"):
+    config["camera"] = os.environ["CAMERA"]
 # A spoken answer is "played" into a file, so that a test can tell it was spoken without anyone hearing it.
 if os.environ.get("PLAYED"):
     piper = os.path.expanduser("~/.local/share/heyclaude/piper/piper")
