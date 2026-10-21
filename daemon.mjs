@@ -282,10 +282,8 @@ const morganPrompt = () => [
   "look shows you is not a memory: never save calendar entries, task lists, search results or what was on screen.",
   "Write every note in the third",
   `person, about ${cfg.userName ?? "the user by name once you know it"}: never as I or me, which would read as being about you.`,
-  "Keep the topics few, distinct",
-  "and tidy: use rewrite_topic to merge, split, rename, correct or delete them as you learn more. File each note under",
-  "the existing topic it belongs to, going by the topics' descriptions; do not put everything in one. Start a new topic,",
-  "with a description, only when none of them fits.",
+  "Where a note goes, and keeping the topics tidy, is seen to for you: say what is worth keeping, and give the topic",
+  "you think fits.",
   mcpTools.length ? "You also have tools from the user's own services; use them when a request concerns those services." : "",
   // Asked for something a switched-off tool would do, the model hunted for another way and then said only that it could not.
   withheld().length
@@ -401,22 +399,6 @@ const MORGAN_TOOLS = [{
         description: { type: "string", description: "Only if no topic fits: one line saying what broad area of life it is" },
       },
       required: ["topic", "note"],
-    },
-  },
-}, {
-  type: "function",
-  function: {
-    name: "rewrite_topic",
-    description: "Replace a memory topic wholesale, to tidy, correct, merge, rename or delete it. Recall it first.",
-    parameters: {
-      type: "object",
-      properties: {
-        topic: { type: "string", description: "The existing topic name" },
-        new_name: { type: "string", description: "A new name, if renaming" },
-        description: { type: "string", description: "One line saying what belongs in the topic" },
-        notes: { type: "array", items: { type: "string" }, description: "The complete new set of notes; empty deletes the topic" },
-      },
-      required: ["topic", "description", "notes"],
     },
   },
 }, {
@@ -679,6 +661,9 @@ async function rememberPicture(args) {
 // device can do it: a request it cannot meet is answered as such, not ignored.
 async function sightIntent(text, likely) {
   if (!likely) return null;
+  // "Go ahead and take it" means nothing on its own: the talk before it says of what.
+  const earlier = history.filter((message) => message.role !== "tool" && message.content).slice(-7, -1)
+    .map((message) => `${message.role === "user" ? "User" : cfg.name}: ${message.content.slice(0, 300)}`).join("\n");
   try {
     const response = await fetch(`${cfg.ollama.url}/api/chat`, {
       method: "POST",
@@ -704,10 +689,12 @@ async function sightIntent(text, likely) {
             + `${Object.keys(SIGHT).map((source) => `${source} (${SIGHT[source].hint.replace(/^\S+ shows you /, "")})`).join("; ")}. `
             + "Decide what the user's message asks for. look: which of those the assistant must look at right now to do as asked, "
             + "or none if the message is not a request to look at something present (talk about pictures, screens or seeing in "
-            + "general is none). remember: true only if the user asks for a picture to be kept so that someone or something can be "
-            + "recognised later. label: for remember, who or what the picture is of, in a word or two (their name if they give it); "
-            + "otherwise empty.",
-        }, { role: "user", content: text }],
+            + "general is none). remember: true if the user asks for a picture to be taken, saved or kept of someone or something, "
+            + "so that it can be recognised later, including \"take it now\" or \"go ahead\" after talk of taking one. If they "
+            + "asked earlier to wait until they say so, remember is true only when this message gives the word (take it, go ahead, "
+            + "now); showing or bringing the subject (\"here she is\") is not the word. label: for remember, who or what the picture is of, in a word or two, by the name used in the "
+            + "conversation; otherwise empty.",
+        }, { role: "user", content: `${earlier ? `Said just before:\n${earlier}\n\n` : ""}The message:\n${text}` }],
       }),
     });
     const intent = JSON.parse((await response.json()).message.content);
@@ -1087,37 +1074,46 @@ async function rememberFacts(text) {
           properties: {
             notes: { type: "array", items: { type: "object", properties: { topic: { type: "string" }, note: { type: "string" } }, required: ["topic", "note"] } },
             replaces: { type: "array", items: { type: "integer" } },
+            corrects: { type: "array", items: { type: "object", properties: { number: { type: "integer" }, rewritten: { type: "string" } }, required: ["number", "rewritten"] } },
             named_topic: { type: "string" },
           },
-          required: ["notes", "replaces", "named_topic"],
+          required: ["notes", "replaces", "corrects", "named_topic"],
         },
         messages: [{
           role: "system",
           content: `${who} has asked an assistant to remember something. Write down what they want remembered.\n`
             + `notes: one note for each subject, complete in itself, in the third person naming ${who}, in as many full sentences as it `
             + "needs to keep the names, roles and details they gave, and nothing they did not say.\n"
-            + "named_topic: the topic they say it should go under (\"file it under Garden\"), exactly as they say it; empty if they name none. Use what was "
+            + "named_topic: the topic they say outright it should go under, in their own words; empty if they name none. Use what was "
             + "said just before to know who or what \"he\", \"it\" or \"that\" is. Give each a topic from this list, or a short new one "
             + `if none fits:\n${topics().map((topic) => `- ${topic.name}: ${topic.description}`).join("\n")}\n`
-            + "replaces: the numbers of the held notes below that the new notes correct or contradict, or that the user says should not "
-            + "be kept. Empty if none.\n"
+            + "corrects: the held notes below that what they said corrects in part (a spelling, a name, a number, a date, a role): for "
+            + "each, its number and the note rewritten with that correction made and everything else in it kept word for word. A "
+            + "correction goes here and not in notes.\n"
+            + "replaces: the numbers of held notes that are wholly wrong now, or that the user says should not be kept. Empty if none.\n"
             + `Held notes:\n${near.map((entry, index) => `${index + 1}. [${entry.topic}] ${entry.note}`).join("\n") || "(none)"}`,
         }, { role: "user", content: `${before ? `Said just before:\n${before}\n\n` : ""}What ${who} said now:\n${text}` }],
       }),
     });
     answer = JSON.parse((await response.json()).message.content);
+    if (process.env.HEYCLAUDE_DEBUG) console.error("remember", JSON.stringify(answer), JSON.stringify(near.map((entry) => entry.note.slice(0, 60))));
   } catch (error) {
     console.error(`remember: ${error.message}`);
     return;
   }
   // A topic the user named is used as they named it; otherwise the gate chooses.
-  const asked = String(answer.named_topic ?? "").trim();
+  // Only if the name is in what they said: a name the model supplies is not theirs.
+  const offered = String(answer.named_topic ?? "").trim();
+  const asked = offered && new RegExp(`\\b${offered.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(text) ? offered : "";
   const notes = (answer.notes ?? []).map((entry) => ({ topic: asked || String(entry.topic ?? "").trim(), note: String(entry.note ?? "").replace(/\s+/g, " ").trim(), ...(asked ? { mine: true } : {}) }))
     .filter((entry) => entry.note.length > 3);
   // A note "replaced" by the very same words is simply kept.
   const plainNote = (text) => words(String(text).replace(/\(\d{4}-\d{2}-\d{2}\)\s*$/, "")).join(" ");
   const saying = new Set(notes.map((entry) => plainNote(entry.note)));
-  const candidates = [...new Set(answer.replaces ?? [])].map((number) => near[number - 1]).filter((entry) => entry && !saying.has(plainNote(entry.note)));
+  // A note being corrected in place is not also taken out.
+  const fixing = new Set((answer.corrects ?? []).map((fix) => fix.number));
+  const candidates = [...new Set(answer.replaces ?? [])].filter((number) => !fixing.has(number)).map((number) => near[number - 1])
+    .filter((entry) => entry && !saying.has(plainNote(entry.note)));
   // Each one checked on its own before it goes: saving a favourite flour once
   // took out four sourdough notes as "corrected". Being about the same thing
   // is not being wrong now.
@@ -1134,7 +1130,58 @@ async function rememberFacts(text) {
       if (verdict.wrong) dropped.push(entry);
     } catch { /* kept, when in doubt */ }
   }
-  if (!notes.length && !dropped.length) return;
+  // Corrections made in place, each checked to be the held note with only the
+  // correction made: a spelling fixed once left the wrong note standing and
+  // added a new one beside it, and another time dropped the dog's breed.
+  const corrected = [];
+  for (const fix of answer.corrects ?? []) {
+    const entry = near[fix.number - 1];
+    // Without the "[Topic]" the held notes were listed under, which the rewrite copied.
+    const rewritten = String(fix.rewritten ?? "").replace(/^\s*\[[^\]]*\]\s*/, "").replace(/\s+/g, " ").trim();
+    if (!entry || rewritten.length < 4 || plainNote(rewritten) === plainNote(entry.note)) continue;
+    try {
+      const verdict = await askOllama(
+        `A note held in ${who}'s memory, what ${who} has just said, and the note rewritten. faithful: true if the rewritten note keeps `
+          + "everything the held note said that their words do not change, and adds nothing they did not say. The change itself (a name "
+          + "spelled as they spelled it out, a number or role as they gave it) is expected; judge only what else was lost or added.",
+        `Held note: ${bareNote(entry.note)}\n\nWhat ${who} said: ${text}\n\nRewritten: ${rewritten}`,
+        { faithful: { type: "boolean" } },
+      );
+      if (process.env.HEYCLAUDE_DEBUG) console.error("faithful", verdict.faithful, rewritten);
+      if (!verdict.faithful) continue;
+    } catch { continue; }
+    const topic = readTopic(entry.topic);
+    const at = topic?.notes.indexOf(entry.note) ?? -1;
+    if (at < 0) continue;
+    topic.notes[at] = `${rewritten} (${new Date().toISOString().slice(0, 10)})`;
+    writeTopic(topic);
+    corrected.push({ topic: topic.name, was: bareNote(entry.note), now: rewritten });
+    emit({ type: "memory", topic: topic.name, note: rewritten, corrected: true });
+  }
+  // A new note that is a held note said again or updated goes into that note,
+  // in place, rather than standing beside it: the same question the gardener
+  // asks, put before the note is saved instead of a day after.
+  for (let index = notes.length - 1; index >= 0; index--) {
+    let vector;
+    try { vector = await transcript.embed(`search_document: ${notes[index].note}`); } catch { continue; }
+    const closest = near.map((entry) => ({ entry, score: noteVectors.has(entry.note) ? likeness(vector, noteVectors.get(entry.note)) : 0 }))
+      .filter((pair) => pair.score >= 0.85 && !dropped.includes(pair.entry)).sort((a, b) => b.score - a.score)[0];
+    if (!closest) continue;
+    const merged = await sameThing(closest.entry.note, notes[index].note);
+    if (!merged) continue;
+    const topic = readTopic(closest.entry.topic);
+    const at = topic?.notes.indexOf(closest.entry.note) ?? -1;
+    if (at < 0) continue;
+    topic.notes[at] = `${merged} (${new Date().toISOString().slice(0, 10)})`;
+    writeTopic(topic);
+    corrected.push({ topic: topic.name, was: bareNote(closest.entry.note), now: merged });
+    emit({ type: "memory", topic: topic.name, note: merged, corrected: true });
+    notes.splice(index, 1);
+  }
+  // A new note that only says what a correction now says is not added again.
+  const nowSaid = new Set(corrected.map((entry) => plainNote(entry.now)));
+  for (let index = notes.length - 1; index >= 0; index--) if (nowSaid.has(plainNote(notes[index].note))) notes.splice(index, 1);
+  if (!notes.length && !dropped.length && !corrected.length) return;
   for (const entry of dropped) {
     const topic = readTopic(entry.topic);
     if (!topic) continue;
@@ -1144,7 +1191,8 @@ async function rememberFacts(text) {
   for (const entry of notes) await memoryTool("remember", entry.mine ? { topic: readTopic(entry.topic)?.name ?? entry.topic, note: entry.note, placed: true } : entry);
   did("remember", { notes: notes.map((entry) => entry.note) }, `Done, just now, and nothing more to do: ${notes.length
     ? `saved ${notes.map((entry) => `"${entry.note}" under ${entry.topic}`).join("; ")}` : "nothing new saved"}${dropped.length
-    ? `; taken out, as what the user said corrects them: ${dropped.map((entry) => `"${entry.note}"`).join("; ")}` : ""}. `
+    ? `; taken out, as what the user said corrects them: ${dropped.map((entry) => `"${entry.note}"`).join("; ")}` : ""}${corrected.length
+    ? `; corrected in place: ${corrected.map((entry) => `"${entry.was}" now reads "${entry.now}"`).join("; ")}` : ""}. `
     + "Tell the user in a sentence what is now remembered (and what was taken out). Do not call remember again for these.");
 }
 
@@ -1678,6 +1726,28 @@ async function askOllama(system, user, properties) {
   return JSON.parse((await response.json()).message.content);
 }
 
+// Whether two notes say the same one thing (one repeats, restates or updates
+// the other); if so, the one note that says all of it, the second's wording
+// winning where they differ. Null when they are separate facts, or in doubt.
+async function sameThing(first, second) {
+  const who = cfg.userName ?? "the user";
+  try {
+    const answer = await askOllama(
+      `Two notes from a memory about ${who}, the second the newer. same: true only if they are about the same one thing, so that a `
+        + "single note could say everything either says (one repeats, restates or updates the other). False when they are separate "
+        + "facts, even closely related ones (two different lenses, two different preferences, a job and a boss). merged: when same, "
+        + `one note in the third person naming ${who}, keeping every detail of both, the second's wording where they differ; otherwise empty.`,
+      `1. ${bareNote(first)}\n2. ${bareNote(second)}`,
+      { same: { type: "boolean" }, merged: { type: "string" } },
+    );
+    const merged = String(answer.merged ?? "").replace(/\s+/g, " ").trim();
+    return answer.same && merged.length >= 8 ? merged : null;
+  } catch (error) {
+    console.error(`memory: ${error.message}`);
+    return null;
+  }
+}
+
 async function tend({ force = false } = {}) {
   const garden = gardenState();
   if (!force && Date.now() - (garden.last ?? 0) < DAY) return null;
@@ -1705,19 +1775,8 @@ async function tend({ force = false } = {}) {
     for (const { i, j } of pairs.sort((x, y) => y.score - x.score)) {
       if (gone.has(i) || gone.has(j)) continue;
       const [first, second] = [topic.notes[i], topic.notes[j]];
-      let answer;
-      try {
-        answer = await askOllama(
-          `Two notes from a memory about ${who}. same: true only if they are about the same one thing, so that a single note could say `
-            + "everything either says (one repeats, restates or updates the other). False when they are separate facts, even closely "
-            + "related ones (two different lenses, two different preferences, a job and a boss). merged: when same, one note in the "
-            + `third person naming ${who}, keeping every detail of both, the newer wording where they differ; otherwise empty.`,
-          `1. ${bareNote(first)}\n2. ${bareNote(second)}`,
-          { same: { type: "boolean" }, merged: { type: "string" } },
-        );
-      } catch (error) { console.error(`garden: ${error.message}`); continue; }
-      const merged = String(answer.merged ?? "").replace(/\s+/g, " ").trim();
-      if (!answer.same || merged.length < 8) continue;
+      const merged = await sameThing(first, second);
+      if (!merged) continue;
       topic.notes[i] = `${merged} (${today})`;
       gone.add(j);
       actions.push({ kind: "merged", topic: topic.name, notes: [first, second], into: topic.notes[i] });
@@ -2434,13 +2493,12 @@ async function fileAway(turns, from = []) {
       "said about themselves: a question they asked is not a fact about them, and neither is what a calendar, task list",
       "or search showed. Ignore small talk and",
       "anything that only mattered in the moment. Recall a topic before adding to it, so that you do not repeat what",
-      "is there. File each note under the topic whose description it fits, not all under one. Use rewrite_topic to correct",
-      "what has changed, and when a topic has grown past about twenty notes, to split it: keep part, and remember the rest",
-      "under a new, narrower topic. When there is",
+      "is there. Where each note goes, and keeping topics tidy, is seen to for you. When there is",
       `nothing more to save, reply with the single word done.\n\nYour memory topics:\n${topicList()}`,
     ].join(" "),
   }, { role: "user", content: `The conversation:\n\n${text}` }];
-  const tools = MORGAN_TOOLS.filter((tool) => ["recall", "remember", "rewrite_topic"].includes(tool.function.name));
+  // No rewriting a whole topic: given that, the model once dropped an unrelated note while fixing a spelling.
+  const tools = MORGAN_TOOLS.filter((tool) => ["recall", "remember"].includes(tool.function.name));
   try {
     for (let round = 0; round < 8; round++) {
       const response = await fetch(`${cfg.ollama.url}/api/chat`, {
@@ -2676,7 +2734,8 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
       const view = await look(intent.look, { question: text });
       if (mine !== turn) return;
       saw.push(view);
-      did(SIGHT[intent.look].tool, { question: text }, `What you see:\n${view}`);
+      did(SIGHT[intent.look].tool, { question: text }, `What you see:\n${view}${intent.remember ? ""
+        : "\n\n(You only looked. No picture has been kept: one is kept only when the user asks for it. Do not say one was.)"}`);
       if (intent.remember) {
         const label = intent.label || cfg.userName || "the user";
         const kept = await rememberPicture({ label, source: intent.look });

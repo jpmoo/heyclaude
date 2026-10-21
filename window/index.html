@@ -348,6 +348,7 @@ function hear(line) {
     case "recall": act("book", "Read from memory", String(e.topic ?? ""), e.body); break;
     case "look": act(e.source === "camera" ? "camera" : e.source === "clipboard" ? "clipboard" : "device-desktop", `Looked at the ${e.source}`, ""); break;
     case "memory": if (e.removed) { act("eraser", `Taken out of ${e.topic}`, String(e.note ?? "")); break; }
+      if (e.corrected) { act("pencil", `Corrected in ${e.topic}`, String(e.note ?? "")); break; }
       act(e.rewritten ? "brain" : "bookmark", e.rewritten ? "Tidied memory" : `Remembered in ${e.topic}`, e.rewritten ? String(e.topic ?? "") : String(e.note ?? ""), e.body); break;
     case "confirm": {
       const [, title, detail] = toolCard(e.name, e.args);

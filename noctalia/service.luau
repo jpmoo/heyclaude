@@ -240,6 +240,8 @@ local function onLine(line: string)
   elseif event.type == "memory" then
     if event.removed then
       act("eraser", `Taken out of {event.topic}`, tostring(event.note or ""))
+    elseif event.corrected then
+      act("pencil", `Corrected in {event.topic}`, tostring(event.note or ""))
     elseif event.rewritten then
       act("brain", "Tidied memory", tostring(event.topic or ""), if type(event.body) == "string" then event.body else nil)
     else
