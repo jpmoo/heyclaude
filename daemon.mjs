@@ -515,7 +515,7 @@ let lastLook = null; // { source, bytes, t }: what was last looked at, held in m
 async function capture(source, args) {
   // On a server, the picture is taken by the client that can see.
   if (!DESK) {
-    const got = await askClient("capture", { source, whole_screen: Boolean(args?.whole_screen) });
+    const got = await askClient("capture", { source, whole_screen: Boolean(args?.whole_screen), patient: Boolean(args?.patient) });
     return got?.text !== undefined ? { text: got.text } : Buffer.from(String(got?.data ?? ""), "base64");
   }
   const file = join(RUNTIME, `heyclaude-look-${process.pid}.${source === "camera" ? "jpg" : "png"}`);
@@ -539,7 +539,7 @@ async function capture(source, args) {
       await run("sh", ["-c", `wl-paste --type '${image}' > '${file}'`]);
     } else {
       // The first frames are dark while the camera settles its exposure.
-      await run("ffmpeg", ["-loglevel", "error", "-y", "-f", "v4l2", "-i", cfg.camera, "-vf", "select=gte(n\\,12)", "-frames:v", "1", file], { timeout: 15_000 });
+      await run("ffmpeg", ["-loglevel", "error", "-y", "-f", "v4l2", "-i", cfg.camera, "-vf", `select=gte(n\\,${args?.patient ? 45 : 12})`, "-frames:v", "1", file], { timeout: 20_000 });
     }
     return readFileSync(file);
   } finally {
@@ -549,38 +549,79 @@ async function capture(source, args) {
 
 // Look, have the model describe what is there, and keep the picture only in
 // memory, briefly, in case the user says to remember it.
+//
+// What is in front of the camera is described from that frame alone. Sent
+// along with the saved pictures (for recognising people), a dark frame was
+// described as the saved picture of the office, word for word, twice; so
+// recognising is a step of its own, which can only say which saved picture
+// matches. A frame with nothing to make out is taken again once, with the
+// camera given longer to settle, and then said to be dark rather than filled in.
 async function look(source, args) {
   try {
-    const bytes = await capture(source, args);
+    let bytes = await capture(source, args);
     if (bytes.text) return bytes.text;
+    let seen = await describeFrame(bytes, source, args.question);
+    if (!seen.visible && source === "camera") {
+      bytes = await capture(source, { ...args, patient: true });
+      if (!bytes.text) seen = await describeFrame(bytes, source, args.question);
+    }
+    if (!seen.visible) return `The ${SIGHT[source].what} showed nothing that could be made out: ${seen.text || "it was dark or blank"}. Say so; do not guess what is there.`;
     lastLook = { source, bytes, t: Date.now() };
-    // Saved pictures go along when there may be someone or something to recognise.
+    // Saved pictures, for who or what this is, when there may be someone or something to recognise.
     const known = source === "screen" ? [] : pictures().slice(0, 6);
-    const key = known.length
-      ? ` The first image is the new one. The others are pictures you saved earlier, for comparison: ${known.map((picture, index) => `image ${index + 2} is ${picture.label}${picture.note ? ` (${picture.note})` : ""}`).join("; ")}.`
-        + " Say who or what in the new image matches a saved picture, and say so plainly when you are not sure."
-      : "";
+    const matches = known.length ? await recognise(bytes, known) : [];
+    return seen.text + (matches.length ? `\n\nCompared with the saved pictures: it matches ${matches.join(" and ")}.` : "");
+  } catch (error) {
+    return `You could not look: ${error.message.split("\n")[0]}`;
+  }
+}
+
+// One frame, described on its own; and whether there is anything in it to make out.
+async function describeFrame(bytes, source, question) {
+  const response = await fetch(`${cfg.ollama.url}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    signal: AbortSignal.timeout(120_000),
+    body: JSON.stringify({
+      model: cfg.ollama.model, stream: false, think: false, keep_alive: cfg.ollama.keepAlive,
+      format: { type: "object", properties: { visible: { type: "boolean" }, description: { type: "string" } }, required: ["visible", "description"] },
+      messages: [{
+        role: "user",
+        content: `This is a ${SIGHT[source].what}, just taken. visible: false if it is dark, blank, or too blurred to make anything out. `
+          + `description: what it shows, fully enough to answer this: "${question ?? "What is this?"}" Quote exactly any text that matters. `
+          + "Plain prose, no lists. Describe only what is in this image.",
+        images: [bytes.toString("base64")],
+      }],
+    }),
+  });
+  if (!response.ok) throw new Error(`Ollama answered ${response.status}`);
+  const answer = JSON.parse((await response.json()).message.content);
+  return { visible: Boolean(answer.visible), text: String(answer.description ?? "").trim() };
+}
+
+// Which saved pictures show the same person, animal or thing as the new one; none when unsure.
+async function recognise(bytes, known) {
+  try {
     const response = await fetch(`${cfg.ollama.url}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       signal: AbortSignal.timeout(120_000),
       body: JSON.stringify({
-        model: cfg.ollama.model,
-        stream: false,
-        think: false,
-        keep_alive: cfg.ollama.keepAlive,
+        model: cfg.ollama.model, stream: false, think: false, keep_alive: cfg.ollama.keepAlive, options: { temperature: 0 },
+        format: { type: "object", properties: { matches: { type: "array", items: { type: "string", enum: known.map((picture) => picture.label) } } }, required: ["matches"] },
         messages: [{
           role: "user",
-          content: `This is a ${SIGHT[source].what}. Describe what it shows, fully enough to answer this: "${args.question ?? "What is this?"}" `
-            + `Quote exactly any text that matters. Plain prose, no lists.${key}`,
+          content: `Image 1 was just taken. The others are saved pictures: ${known.map((picture, index) => `image ${index + 2} is ${picture.label}${picture.note ? ` (${picture.note})` : ""}`).join(", ")}. `
+            + "matches: the saved pictures that show the same person, animal, place or thing that is clearly visible in image 1. "
+            + "Empty if none does, or if you are not sure.",
           images: [bytes.toString("base64"), ...known.map((picture) => picture.data)],
         }],
       }),
     });
-    if (!response.ok) throw new Error(`Ollama answered ${response.status}`);
-    return (await response.json()).message.content.trim();
-  } catch (error) {
-    return `You could not look: ${error.message.split("\n")[0]}`;
+    if (!response.ok) return [];
+    return [...new Set(JSON.parse((await response.json()).message.content).matches ?? [])];
+  } catch {
+    return [];
   }
 }
 
@@ -3496,14 +3537,37 @@ async function checkInterrupt(pcm) {
 // answer, no waiting for a reply, back to listening for the wake word.
 const GOODBYE = /^(ok |okay |alright |all right |great |good |thanks |thank you |no |nope |no thanks |no thank you )*(stop|stop it|stop talking|cancel|quiet|be quiet|enough|that's enough|thats enough|shut up|bye|bye bye|goodbye|good bye|see you|see you later|that's all|thats all|that is all|that will be all|that'll be all|that's it|thats it|that is it|i'm done|im done|we're done|were done|all done|nothing else|that's everything|never ?mind|stop listening|go to sleep|good ?night|no thanks|no thank you|thanks|thank you)( for now| then| morgan| thanks| thank you)*$/;
 
+const FAREWELL = /\b(bye|goodbye|good bye|see you|see ya|later|thats all|that is all|that will be all|thatll be all|good night|goodnight|night|all set|im done|were done|done for now)\b/;
+
+// A short goodbye, fitting the time of day, and not the same one twice running.
+let lastFarewell = "";
+function farewell() {
+  const hour = new Date().getHours();
+  const name = cfg.userName ? `, ${cfg.userName}` : "";
+  const lines = hour >= 21 || hour < 4 ? [`Good night${name}.`, `Sleep well${name}.`, "Night. Talk tomorrow."]
+    : hour < 12 ? [`Have a good morning${name}.`, "Okay, talk soon.", `Bye for now${name}.`]
+      : hour < 17 ? [`Have a good afternoon${name}.`, "Okay, talk soon.", `Bye for now${name}.`]
+        : [`Have a good evening${name}.`, "Okay, talk soon.", `Bye for now${name}.`];
+  const choices = lines.filter((line) => line !== lastFarewell);
+  lastFarewell = choices[Math.floor(Math.random() * choices.length)];
+  return lastFarewell;
+}
+
 // The user's turn, from the microphone.
 function heard(text) {
   if (!text) return setState("idle");
-  if (GOODBYE.test(words(text.replace(new RegExp(cfg.name, "gi"), "")).join(" "))) {
+  const plainly = words(text.replace(new RegExp(cfg.name, "gi"), "")).join(" ");
+  if (GOODBYE.test(plainly)) {
     proposals = [];
     emit({ type: "user", text });
     spokenTurn = false;
-    return setState("idle");
+    // A goodbye is answered in kind; "stop" or "quiet" asks for silence, and gets it.
+    if (!FAREWELL.test(plainly) || !cfg.tts) return setState("idle");
+    const line = farewell();
+    emit({ type: "sentence", text: line });
+    setState("speaking");
+    afterSpeech = () => { if (state === "speaking") setState("idle"); };
+    return speakText(line);
   }
   spokenTurn = true;
   ask(text);

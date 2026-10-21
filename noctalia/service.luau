@@ -210,7 +210,7 @@ local function onLine(line: string)
     local glyph = if event.source == "camera" then "camera" elseif event.source == "clipboard" then "clipboard" else "device-desktop"
     act(glyph, `Looked at the {event.source}`, "")
   elseif event.type == "consult" then
-    noctalia.state.set("caption", event.question)
+    -- The question put to the Oracle is shown on its card, not read out in the voice popup.
     act("sparkles", "Asked the Oracle", event.question)
   elseif event.type == "oracle" then
     -- Kept to go under the answer it was for, folded away, rather than shown ahead of it.
