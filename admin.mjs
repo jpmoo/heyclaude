@@ -125,7 +125,9 @@ export function createAdmin(d) {
       const file = join(RUNTIME, `heyclaude-view-${Date.now()}.jpg`);
       writeFileSync(file, Buffer.from(picture.data, "base64"), { mode: 0o600 });
       setTimeout(() => rmSync(file, { force: true }), 120_000).unref();
-      return { path: file };
+      // The picture as well as where it was put: on a server, the file is on the
+      // server, and the client showing it writes one of its own.
+      return { path: file, data: picture.data };
     },
     "memory.picture.delete": ({ label }) => { rmSync(d.picturePath(label), { force: true }); return {}; },
 

@@ -4169,6 +4169,14 @@ async function clientCommand(command, rest, line, reply) {
   }
   // Settings may set the server working for a while (a tidying of memory): it is given longer.
   const answer = await remote(line, command === "admin" ? 300_000 : 45_000);
+  // A saved picture to look at in settings: put where this machine can show it.
+  if (command === "admin" && /"op"\s*:\s*"memory\.picture\.view"/.test(line) && answer?.ok && answer.data) {
+    const file = join(RUNTIME, `heyclaude-view-${Date.now()}.jpg`);
+    writeFileSync(file, Buffer.from(answer.data, "base64"), { mode: 0o600 });
+    setTimeout(() => rmSync(file, { force: true }), 120_000).unref();
+    answer.path = file;
+    delete answer.data;
+  }
   if (command === "status" && answer?.ok) {
     // The server's state, with what this client hears and speaks with.
     Object.assign(answer, { role: "client", server: CLIENT.server, stt: Boolean(cfg.stt), tts: Boolean(cfg.tts), wakeWord: cfg.wakeWord,
