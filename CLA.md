@@ -3,7 +3,7 @@
 **Version 1.0 — draft, not yet reviewed by a lawyer.** Have it reviewed before
 accepting outside contributions.
 
-Thank you for contributing to Morgan (this repository, `heyclaude`). This
+Thank you for contributing to Morgan (this repository, `heymorgan`). This
 agreement says what you grant when you do. It is modeled on the Apache Software
 Foundation's Individual Contributor License Agreement.
 

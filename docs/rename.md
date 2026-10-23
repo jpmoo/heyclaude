@@ -1,16 +1,15 @@
 # Renaming heyclaude to heymorgan
 
-**Mostly a plan, not yet carried out.** Written 2026-10-23.
+**Carried out on 2026-10-23,** with Jeff's go-ahead ("Do the rename plan"):
+steps 1–7 in one change, the laptop switched over the same day. The server is
+switched by hand, with the commands in `docs/deploy.md` ("Switching from
+heyclaude"). What is left is "The order", item 5: a later release that drops
+the old names.
 
-**Decided by Jeff (2026-10-23):** the repository and its folder are called
-**heymorgan**. Those are being done separately, as step 7 describes: the GitHub
-repository `jpmoo/heyclaude` becomes `jpmoo/heymorgan`, and the laptop's
-checkout moves to `~/Documents/Scripts/heymorgan`, with the unit's paths, the
-command and plugin links and the desktop file repointed at the same time.
-
-**Not yet decided, and not to be done without Jeff's go-ahead:** everything
-else in this document — the command, the units, the socket, the folders Morgan
-keeps its settings and memory in, the environment variables.
+Jeff took the proposals below as they stand: **heymorgan** for every name a
+machine reads, the app id `io.github.jpmoo.heymorgan`, the keyring entry left as
+it is, and the old names kept for one release. The plan is kept as it was
+written, as the record of why.
 
 The assistant is called Morgan; the code has been `heyclaude` throughout.
 Talaris is about to depend on Morgan (its face is Talaris's; its brain stays

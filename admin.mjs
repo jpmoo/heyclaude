@@ -59,7 +59,7 @@ export function createAdmin(d) {
     "client.set": ({ server = "", key = "", device = "" } = {}) => {
       server = String(server).trim();
       key = String(key).trim();
-      if (server && !key && !d.client.get().hasKey) throw new Error("A server needs a key: run `heyclaude access add <device>` on the server.");
+      if (server && !key && !d.client.get().hasKey) throw new Error("A server needs a key: run `heymorgan access add <device>` on the server.");
       if (key && !key.startsWith("hc_")) throw new Error("That is not a key the server issued (they start hc_).");
       d.client.set({ server, key, device: String(device).trim() });
       d.restartSoon();
@@ -122,7 +122,7 @@ export function createAdmin(d) {
     "memory.picture.view": ({ label }) => {
       const picture = d.pictures().find((entry) => entry.label === label);
       if (!picture) throw new Error(`there is no picture of ${label}`);
-      const file = join(RUNTIME, `heyclaude-view-${Date.now()}.jpg`);
+      const file = join(RUNTIME, `heymorgan-view-${Date.now()}.jpg`);
       writeFileSync(file, Buffer.from(picture.data, "base64"), { mode: 0o600 });
       setTimeout(() => rmSync(file, { force: true }), 120_000).unref();
       // The picture as well as where it was put: on a server, the file is on the

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Print heyclaude's data key, creating it on first use.
+"""Print Morgan's data key, creating it on first use.
 
 The key lives in the login keyring, which is itself encrypted with the login
 password and unlocked at login. Nothing on disk can be read without it.
@@ -18,6 +18,8 @@ import gi
 gi.require_version("Secret", "1")
 from gi.repository import GLib, Secret  # noqa: E402
 
+# Still named heyclaude, as Morgan was: the key is found by these names, and
+# renaming them risks not finding it (docs/rename.md, step 4).
 SCHEMA = Secret.Schema.new(
     "dev.heyclaude.Key",
     Secret.SchemaFlags.NONE,
@@ -33,7 +35,7 @@ if "--set" in sys.argv:
     except ValueError:
         good = False
     if not good:
-        sys.exit("that is not a heyclaude key")
+        sys.exit("that is not a memory key")
     Secret.password_store_sync(SCHEMA, ATTRIBUTES, Secret.COLLECTION_DEFAULT, "heyclaude data key", given, None)
     sys.exit(0)
 

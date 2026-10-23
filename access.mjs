@@ -1,5 +1,5 @@
 // The keys that let client apps reach a server: issued here, one per device,
-// shown once, kept only as a hash. `heyclaude access add|list|remove`.
+// shown once, kept only as a hash. `heymorgan access add|list|remove`.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";

@@ -10,10 +10,10 @@ import { spawnSync } from "node:child_process";
 import { rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { createServer } from "node:net";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { SHARE } from "./env.mjs";
 
-const MODEL = join(homedir(), ".local", "share", "heyclaude", "kokoro-multi-lang-v1_0");
+const MODEL = join(SHARE, "kokoro-multi-lang-v1_0");
 export const RATE = 24000;
 
 function load(british = false) {

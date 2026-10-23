@@ -9,17 +9,50 @@
 //           as they always have
 //
 // A .env in the checkout giving PORT makes a server, as the other apps on the
-// home server are configured. A ~/.config/heyclaude/client.json naming a
-// server makes a client. HEYCLAUDE_ROLE says outright, for trials.
-import { existsSync, readFileSync } from "node:fs";
+// home server are configured. A ~/.config/heymorgan/client.json naming a
+// server makes a client. HEYMORGAN_ROLE says outright, for trials.
+import { existsSync, lstatSync, readFileSync, renameSync, symlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const ROOT = dirname(fileURLToPath(import.meta.url));
 
+// Morgan was heyclaude until 2026-10-23 (docs/rename.md). Its settings are
+// HEYMORGAN_*, and a HEYCLAUDE_* that is still set somewhere is read as the
+// same thing; everything after this reads only the new names.
+for (const [name, value] of Object.entries(process.env)) {
+  if (name.startsWith("HEYCLAUDE_")) process.env[`HEYMORGAN_${name.slice("HEYCLAUDE_".length)}`] ??= value;
+}
+
+// The folders kept under the old name are moved to the new one the first time
+// this runs, each with one rename (the speech models are several GB, and are
+// never copied), and a link is left at the old place for anything that still
+// says heyclaude. With both there, nothing is moved and the new one is used.
+function folder(parent) {
+  const now = join(parent, "heymorgan");
+  const before = join(parent, "heyclaude");
+  let old = null;
+  try { old = lstatSync(before); } catch { /* never had one */ }
+  if (old?.isDirectory() && !existsSync(now)) {
+    try {
+      renameSync(before, now);
+      symlinkSync(now, before);
+      console.error(`moved ${before} to ${now}`);
+    } catch (error) {
+      console.error(`could not move ${before} to ${now}: ${error.message}`);
+    }
+  } else if (old?.isDirectory()) {
+    console.error(`both ${before} and ${now} are there: using ${now}, and leaving ${before} as it is`);
+  }
+  return existsSync(now) || !existsSync(before) ? now : before;
+}
+
+export const CONFIG_HOME = folder(join(homedir(), ".config"));
+export const SHARE = folder(join(homedir(), ".local", "share"));
+
 // A configuration named outright is a trial run beside the real one (see tests/trial.sh).
-export const TRIAL = Boolean(process.env.HEYCLAUDE_CONFIG);
+export const TRIAL = Boolean(process.env.HEYMORGAN_CONFIG);
 
 const dotenv = join(ROOT, ".env");
 if (existsSync(dotenv)) {
@@ -29,26 +62,26 @@ if (existsSync(dotenv)) {
   }
 }
 
-export const CLIENT_FILE = process.env.HEYCLAUDE_CLIENT_FILE ?? join(homedir(), ".config", "heyclaude", "client.json");
+export const CLIENT_FILE = process.env.HEYMORGAN_CLIENT_FILE ?? join(CONFIG_HOME, "client.json");
 let client = {};
 try { client = JSON.parse(readFileSync(CLIENT_FILE, "utf8")); } catch { /* none: not a client */ }
-// { server: "host:port" or "https://host/heyclaude", key: "hc_..." }
+// { server: "host:port" or "https://host/heymorgan", key: "hc_..." }
 export const CLIENT = client;
 
-export const ROLE = process.env.HEYCLAUDE_ROLE ?? (process.env.PORT ? "server" : client.server ? "client" : "local");
+export const ROLE = process.env.HEYMORGAN_ROLE ?? (process.env.PORT ? "server" : client.server ? "client" : "local");
 
 // A client's settings are the server's, mirrored here as they change; the
 // laptop's own config.json is left as it was, for running Morgan locally again.
-export const MIRROR = process.env.HEYCLAUDE_MIRROR ?? join(homedir(), ".config", "heyclaude", "mirror.json");
-if (ROLE === "client" && existsSync(MIRROR)) process.env.HEYCLAUDE_CONFIG ??= MIRROR;
+export const MIRROR = process.env.HEYMORGAN_MIRROR ?? join(CONFIG_HOME, "mirror.json");
+if (ROLE === "client" && existsSync(MIRROR)) process.env.HEYMORGAN_CONFIG ??= MIRROR;
 
 if (ROLE === "server") {
-  const data = process.env.HEYCLAUDE_DATA ?? join(ROOT, "data");
-  process.env.HEYCLAUDE_DATA = data;
-  process.env.HEYCLAUDE_CONFIG ??= join(data, "config.json");
-  process.env.HEYCLAUDE_MEMORY ??= join(data, "memory");
+  const data = process.env.HEYMORGAN_DATA ?? join(ROOT, "data");
+  process.env.HEYMORGAN_DATA = data;
+  process.env.HEYMORGAN_CONFIG ??= join(data, "config.json");
+  process.env.HEYMORGAN_MEMORY ??= join(data, "memory");
   // The memory key, which on the laptop is in the login keyring; a server has none.
-  process.env.HEYCLAUDE_KEY_FILE ??= join(data, "memory.key");
-  // The server's own command socket, for `heyclaude` run on the server.
-  process.env.HEYCLAUDE_SOCKET ??= join(data, "heyclaude.sock");
+  process.env.HEYMORGAN_KEY_FILE ??= join(data, "memory.key");
+  // The server's own command socket, for `heymorgan` run on the server.
+  process.env.HEYMORGAN_SOCKET ??= join(data, "heymorgan.sock");
 }

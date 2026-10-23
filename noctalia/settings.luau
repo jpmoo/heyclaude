@@ -1,10 +1,10 @@
 --!nonstrict
 -- The settings window: memory, voice, listening, files and connections. It
 -- holds no settings of its own. Everything shown is asked of the daemon, and
--- every change is a request to it (`heyclaude admin`), so this window and
--- `heyclaude settings` in a terminal are two views of the same thing.
+-- every change is a request to it (`heymorgan admin`), so this window and
+-- `heymorgan settings` in a terminal are two views of the same thing.
 
-local heyclaude = noctalia.expandPath("~/.local/bin/heyclaude")
+local heymorgan = noctalia.expandPath("~/.local/bin/heymorgan")
 
 local custom = noctalia.getConfig("accent_source") ~= "theme"
 local accent = if custom then (noctalia.getConfig("accent") or "#6f9bb3") else "primary"
@@ -54,7 +54,7 @@ local refresh
 -- ---------------------------------------------------------------- the daemon
 
 local function call(op: string, args, done)
-  noctalia.runAsync({ heyclaude, "admin", noctalia.json.encode({ op = op, args = args or {} }) }, function(result)
+  noctalia.runAsync({ heymorgan, "admin", noctalia.json.encode({ op = op, args = args or {} }) }, function(result)
     local answer = noctalia.json.decode(result.stdout or "")
     if type(answer) ~= "table" then
       answer = { ok = false, error = `{who()} is not running` }
@@ -526,7 +526,7 @@ local function voiceTab()
       ui.button({ text = `Use {piperPicked or "this voice"}`, variant = "primary", controlSize = "sm", onClick = function()
         set({ voice = piperPicked, engine = "piper" })
       end }),
-      hint("More can be downloaded from “heyclaude settings” in a terminal."),
+      hint("More can be downloaded from “heymorgan settings” in a terminal."),
     }),
   }))
 
@@ -739,10 +739,10 @@ local function filesTab()
           end,
         }),
         ui.button({ text = "Browse…", variant = "secondary", controlSize = "sm", onClick = function()
-          -- Closed first so the chooser is not behind this window; `heyclaude
+          -- Closed first so the chooser is not behind this window; `heymorgan
           -- choose-folder` adds what is picked and reopens it.
           panel.close()
-          noctalia.runAsync({ heyclaude, "choose-folder" })
+          noctalia.runAsync({ heymorgan, "choose-folder" })
         end }),
       }),
       hint("Markdown, text, code, PDFs and pictures inside these folders can be listed, searched and read. Nothing is ever written."),
@@ -789,7 +789,7 @@ local function logTab()
           render()
         end }),
         ui.spacer({ flexGrow = 1 }),
-        hint("The latest 200 lines since it last started. `heyclaude log -f` follows it in a terminal."),
+        hint("The latest 200 lines since it last started. `heymorgan log -f` follows it in a terminal."),
       }),
       ui.separator({ color = "outline/0.3" }),
       ui.column({ gap = 3 }, shown),
@@ -826,8 +826,8 @@ local function connectionsTab()
       then `On the server at {place.server}, as {place.device}; {if place.connected then "connected" else "not reachable just now"}.`
       elseif place.role == "server" then "This is the server."
       else "Wholly on this laptop. Give a server's address and a key from it to make this laptop one of its clients."),
-    input("home.server", "Server", place.server, "home-server:8790, or https://your-tailnet-name/heyclaude"),
-    input("home.key", "Key", "", if place.hasKey then "(kept; paste a new one to replace it)" else "hc_… from `heyclaude access add <device>` on the server"),
+    input("home.server", "Server", place.server, "home-server:8790, or https://your-tailnet-name/heymorgan"),
+    input("home.key", "Key", "", if place.hasKey then "(kept; paste a new one to replace it)" else "hc_… from `heymorgan access add <device>` on the server"),
     input("home.device", "This device's name", place.device, "laptop"),
     ui.row({ gap = 8 }, {
       ui.button({ text = "Use this server", glyph = "plug-connected", variant = "secondary", controlSize = "sm", onClick = function()
@@ -876,7 +876,7 @@ local function connectionsTab()
         color = "on_surface", fontSize = 12, flexGrow = 1,
       }),
       ui.button({ text = if account.loggedIn then "Switch account" else "Sign in", variant = "secondary", controlSize = "sm", onClick = function()
-        noctalia.runInTerminal(`{heyclaude} login; echo; echo 'You can close this window.'; read _`)
+        noctalia.runInTerminal(`{heymorgan} login; echo; echo 'You can close this window.'; read _`)
       end }),
     }),
     hint("Signing in opens a terminal and your browser. This login is the Oracle's own, apart from any other Claude login here."),

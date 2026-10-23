@@ -3,7 +3,7 @@
 Where the time goes in a turn: each question is put to a trial daemon in one
 running conversation, and the moments its events arrive are noted.
 
-    HEYCLAUDE_SOCKET=... python3 tests/steps.py "question" "question" ...
+    HEYMORGAN_SOCKET=... python3 tests/steps.py "question" "question" ...
 """
 import json
 import os
@@ -14,7 +14,7 @@ import time
 
 def send(command):
     link = socket.socket(socket.AF_UNIX)
-    link.connect(os.environ["HEYCLAUDE_SOCKET"])
+    link.connect(os.environ["HEYMORGAN_SOCKET"])
     link.sendall((command + "\n").encode())
     return link
 

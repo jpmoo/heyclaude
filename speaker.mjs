@@ -4,11 +4,11 @@
 
 import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { SHARE } from "./env.mjs";
 import { MEMORY, readSealed, writeSealed } from "./lib.mjs";
 
-const MODEL = join(homedir(), ".local", "share", "heyclaude", "speaker", "nemo_en_titanet_small.onnx");
+const MODEL = join(SHARE, "speaker", "nemo_en_titanet_small.onnx");
 export const VOICEPRINTS = join(MEMORY, "voices");
 const slug = (name) => String(name).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60);
 

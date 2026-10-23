@@ -1,6 +1,6 @@
 # Contributing
 
-Morgan (this repository, `heyclaude`) is licensed under the **GNU General
+Morgan (this repository, `heymorgan`) is licensed under the **GNU General
 Public License, version 3 only** (`LICENSE`). Its owner also licenses it on
 other terms, including commercial ones — the same arrangement as Talaris, the
 desktop shell Morgan is built into, so the two products are offered the same

@@ -3,10 +3,10 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { SHARE } from "./env.mjs";
 
-const MODEL = join(homedir(), ".local", "share", "heyclaude", "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01");
+const MODEL = join(SHARE, "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01");
 
 export const available = () => existsSync(join(MODEL, "bpe.model"));
 
@@ -84,7 +84,7 @@ export function spotter(phrases, { threshold = 0.25, score = 1.5 } = {}) {
   const sherpa = createRequire(import.meta.url)("sherpa-onnx-node");
   const scores = vocabulary();
   const keywords = phrases.map((phrase) => `${pieces(phrase, scores).join(" ")} @${phrase.replace(/\s+/g, "_")}`).join("\n");
-  const file = join(process.env.XDG_RUNTIME_DIR ?? "/tmp", `heyclaude-keywords-${process.pid}.txt`);
+  const file = join(process.env.XDG_RUNTIME_DIR ?? "/tmp", `heymorgan-keywords-${process.pid}.txt`);
   writeFileSync(file, keywords + "\n");
   const kws = new sherpa.KeywordSpotter({
     featConfig: { sampleRate: 16000, featureDim: 80 },

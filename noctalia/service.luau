@@ -1,10 +1,10 @@
 --!nonstrict
--- Follows the heyclaude daemon's event stream and publishes what the widget
+-- Follows the heymorgan daemon's event stream and publishes what the widget
 -- and the voice panel draw. Shows the panel while Morgan is doing anything.
 
 local PANEL = "jpmoo/morgan:voice"
 local BARS = 48
-local heyclaude = noctalia.expandPath("~/.local/bin/heyclaude")
+local heymorgan = noctalia.expandPath("~/.local/bin/heymorgan")
 -- By full path: the shell's own PATH need not include where it was installed.
 local shell = noctalia.expandPath("~/.local/bin/noctalia")
 
@@ -282,7 +282,7 @@ end
 -- Earlier conversations, so the chat window opens with something to scroll
 -- back through. What arrived meanwhile goes after.
 local function recent(keep: boolean)
-  noctalia.runAsync({ heyclaude, "recent", "40" }, function(result)
+  noctalia.runAsync({ heymorgan, "recent", "40" }, function(result)
     local reply = noctalia.json.decode(result.stdout or "")
     if type(reply) ~= "table" or type(reply.items) ~= "table" then
       return
@@ -310,7 +310,7 @@ noctalia.state.watch("load_request", function(request)
     recent(false)
     return
   end
-  noctalia.runAsync({ heyclaude, "conversation", request.id }, function(result)
+  noctalia.runAsync({ heymorgan, "conversation", request.id }, function(result)
     local reply = noctalia.json.decode(result.stdout or "")
     if type(reply) ~= "table" or not reply.ok then
       return
@@ -365,16 +365,16 @@ noctalia.state.watch("attach_request", function(request)
     end)
     return
   end
-  -- The chooser: this window out of the way first; `heyclaude choose` shows
+  -- The chooser: this window out of the way first; `heymorgan choose` shows
   -- the chooser, adds what is picked and brings the window back. It is
   -- started without waiting on it, because a command that is waited on is
   -- given up on after a while, and that closed the chooser mid-choice.
   noctalia.runAsync({ shell, "msg", "panel-close", "jpmoo/morgan:chat" }, function()
-    noctalia.runAsync({ heyclaude, "choose" })
+    noctalia.runAsync({ heymorgan, "choose" })
   end)
 end)
 
--- From outside: `heyclaude attach <file>` puts a file on the next message.
+-- From outside: `heymorgan attach <file>` puts a file on the next message.
 function onIpc(event, payload)
   if event == "attach" and type(payload) == "string" and payload ~= "" then
     addFiles({ payload })
@@ -388,7 +388,7 @@ noctalia.state.watch("chat_open", function(value)
 end)
 
 -- The stream ends when the daemon restarts; pick it up again.
-noctalia.runStream(`while :; do {heyclaude} watch 2>/dev/null; sleep 2; done`, onLine)
+noctalia.runStream(`while :; do {heymorgan} watch 2>/dev/null; sleep 2; done`, onLine)
 
 noctalia.setUpdateInterval(200)
 

@@ -20,7 +20,7 @@ export class McpClient {
     const init = await this.request("initialize", {
       protocolVersion: PROTOCOL,
       capabilities: {},
-      clientInfo: { name: "heyclaude", version: "0.1" },
+      clientInfo: { name: "heymorgan", version: "0.1" },
     });
     if (init.protocolVersion) this.headers["MCP-Protocol-Version"] = init.protocolVersion;
     await this.send({ jsonrpc: "2.0", method: "notifications/initialized" });

@@ -1,22 +1,22 @@
-# heyclaude on the home server — reference template, as Brigid's is.
+# Morgan (heymorgan) on the home server — reference template, as Brigid's is.
 #
 # It runs from its project checkout, as the other web apps there do. Replace:
 #   User=             the account that owns the checkout
 #   WorkingDirectory= the absolute checkout path
 #   ExecStart=        the checkout path again (and node's, from `command -v node`)
-#   ReadWritePaths=   the checkout path once more
+#   ReadWritePaths=   the checkout path once more, and the home folder's
 # The port is in .env in the checkout (see .env.example).
 
 [Unit]
-Description=heyclaude — Morgan's brain, serving its clients
+Description=heymorgan — Morgan's brain, serving its clients
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=jpmoore
-WorkingDirectory=/home/jpmoore/heyclaude
-ExecStart=/usr/bin/node /home/jpmoore/heyclaude/daemon.mjs
+WorkingDirectory=/home/jpmoore/heymorgan
+ExecStart=/usr/bin/node /home/jpmoore/heymorgan/daemon.mjs
 # Saving some settings asks for a restart, which it does by exiting.
 Restart=always
 RestartSec=3
@@ -27,7 +27,11 @@ Environment=PATH=/home/jpmoore/.local/bin:/usr/local/bin:/usr/bin:/bin
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
-ReadWritePaths=/home/jpmoore/heyclaude /home/jpmoore/.config/heyclaude /home/jpmoore/.local/share/heyclaude
+# The parents of its folders, not the folders: the first start after the
+# rename moves ~/.config/heyclaude and ~/.local/share/heyclaude to heymorgan.
+# A "-" lets it start where one of them is missing.
+ReadWritePaths=/home/jpmoore/heymorgan -/home/jpmoore/.config -/home/jpmoore/.local/share
 
 [Install]
 WantedBy=multi-user.target
+Alias=heyclaude.service

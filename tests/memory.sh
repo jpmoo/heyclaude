@@ -8,22 +8,22 @@
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"; root="$here/.."
 trial="$(mktemp -d)"; mkdir -p "$trial/memory"
-cp -r "$HOME/.local/share/heyclaude/memory/." "$trial/memory/"; rm -rf "$trial/memory"/before-* "$trial/memory"/garden*
+cp -r "$HOME/.local/share/heymorgan/memory/." "$trial/memory/"; rm -rf "$trial/memory"/before-* "$trial/memory"/garden*
 python3 - "$trial" <<'PY'
 import json, os, sys
-config = json.load(open(os.path.expanduser("~/.config/heyclaude/config.json")))
+config = json.load(open(os.path.expanduser("~/.config/heymorgan/config.json")))
 config.update({"wakeWord": None, "interruptWord": None, "tts": None, "engine": "piper", "hotkey": None, "echoCancel": False,
                "record": "sleep 100", "followUpSeconds": 0, "folders": [], "mcpServers": {}, "sight": []})
 json.dump(config, open(sys.argv[1] + "/config.json", "w"))
 PY
-export HEYCLAUDE_SOCKET="${XDG_RUNTIME_DIR:-/tmp}/heyclaude-memory.sock" HEYCLAUDE_ROLE=local HEYCLAUDE_CLIENT_FILE=/nonexistent
-rm -f "$HEYCLAUDE_SOCKET"
-(cd "$root" && HEYCLAUDE_CONFIG="$trial/config.json" HEYCLAUDE_MEMORY="$trial/memory" exec node daemon.mjs) > "$trial/log" 2>&1 &
+export HEYMORGAN_SOCKET="${XDG_RUNTIME_DIR:-/tmp}/heymorgan-memory.sock" HEYMORGAN_ROLE=local HEYMORGAN_CLIENT_FILE=/nonexistent
+rm -f "$HEYMORGAN_SOCKET"
+(cd "$root" && HEYMORGAN_CONFIG="$trial/config.json" HEYMORGAN_MEMORY="$trial/memory" exec node daemon.mjs) > "$trial/log" 2>&1 &
 daemon=$!
-trap 'kill $daemon 2>/dev/null || true; rm -rf "$trial"; rm -f "$HEYCLAUDE_SOCKET"' EXIT
-for _ in $(seq 40); do [ -S "$HEYCLAUDE_SOCKET" ] && break; sleep 0.5; done; sleep 2
+trap 'kill $daemon 2>/dev/null || true; rm -rf "$trial"; rm -f "$HEYMORGAN_SOCKET"' EXIT
+for _ in $(seq 40); do [ -S "$HEYMORGAN_SOCKET" ] && break; sleep 0.5; done; sleep 2
 
-admin() { "$root/bin/heyclaude" admin "$1"; }
+admin() { "$root/bin/heymorgan" admin "$1"; }
 topics() { admin '{"op":"memory.list"}' | python3 -c 'import json,sys; print("   topics:", ", ".join("%s (%d)" % (t["name"], len(t["notes"])) for t in json.load(sys.stdin)["topics"]))'; }
 
 cat > "$here/_memory.json" <<'JSON'

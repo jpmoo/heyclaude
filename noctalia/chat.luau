@@ -2,7 +2,7 @@
 -- The chat window: the conversation so far, a box to type in, and a button to
 -- speak instead. Typed turns are answered in text; spoken ones aloud as well.
 
-local heyclaude = noctalia.expandPath("~/.local/bin/heyclaude")
+local heymorgan = noctalia.expandPath("~/.local/bin/heymorgan")
 local shell = noctalia.expandPath("~/.local/bin/noctalia")
 
 -- One accent of the user's choosing in place of the theme's colours, which in
@@ -86,7 +86,7 @@ local picked = nil -- the day whose conversations are listed, YYYY-MM-DD
 
 -- With no month shown yet, the daemon gives this one.
 local function fetchMonth()
-  local command = { heyclaude, "days" }
+  local command = { heymorgan, "days" }
   if shown then
     table.insert(command, `{shown.year}-{string.format("%02d", shown.month)}`)
   end
@@ -217,14 +217,14 @@ local function tools(index: number, text: string, line)
       glyph = "thumb-up", variant = if line.good then "primary" else "ghost", controlSize = "sm",
       tooltip = if line.good then "Marked as a good answer. Click to clear." else "A good answer: prefer it when recalling",
       onClick = function()
-        noctalia.runAsync({ heyclaude, "rate", tostring(line.t), if line.good then "none" else "up" })
+        noctalia.runAsync({ heymorgan, "rate", tostring(line.t), if line.good then "none" else "up" })
       end,
     }))
     table.insert(marks, ui.button({
       glyph = "thumb-down", variant = if line.hidden then "destructive" else "ghost", controlSize = "sm",
       tooltip = if line.hidden then "Hidden from Morgan. Click to bring it back." else "A wrong answer: hide it from Morgan from now on",
       onClick = function()
-        noctalia.runAsync({ heyclaude, "rate", tostring(line.t), if line.hidden then "none" else "down" })
+        noctalia.runAsync({ heymorgan, "rate", tostring(line.t), if line.hidden then "none" else "down" })
       end,
     }))
   end
@@ -279,7 +279,7 @@ local function reviewRows(line)
   local rows = { ui.label({ text = "These notes in memory may have come from this answer. Keep or delete each:", color = "on_surface", fontSize = 11, fontWeight = "bold", maxWidth = WIDTH - 110 }) }
   for index, entry in ipairs(line.review or {}) do
     local function settle(action: string)
-      noctalia.runAsync({ heyclaude, "settle", noctalia.json.encode({ t = line.t, topic = entry.topic, note = entry.note, action = action }) })
+      noctalia.runAsync({ heymorgan, "settle", noctalia.json.encode({ t = line.t, topic = entry.topic, note = entry.note, action = action }) })
     end
     table.insert(rows, ui.row({ key = `rv{line.t}:{index}`, gap = 6, align = "center" }, {
       ui.column({ gap = 0, flexGrow = 1 }, {
@@ -314,23 +314,23 @@ local function send(text: string)
   end
   local log = noctalia.state.get("log") or {}
   if text == "/new" or text == "/interview" or text == "/stop" then
-    noctalia.runAsync({ heyclaude, text:sub(2) })
+    noctalia.runAsync({ heymorgan, text:sub(2) })
   elseif log[1] and log[1].who == "past" and log[1].id then
     -- Typed into an earlier conversation: it is carried on first, then this goes to it.
     local carried = text
-    noctalia.runAsync({ heyclaude, "continue", tostring(log[1].id) }, function()
+    noctalia.runAsync({ heymorgan, "continue", tostring(log[1].id) }, function()
       if #files > 0 then
-        noctalia.runAsync({ heyclaude, "ask", noctalia.json.encode({ text = carried, files = files }) })
+        noctalia.runAsync({ heymorgan, "ask", noctalia.json.encode({ text = carried, files = files }) })
         noctalia.state.set("attachments", {})
       else
-        noctalia.runAsync({ heyclaude, "type", carried })
+        noctalia.runAsync({ heymorgan, "type", carried })
       end
     end)
   elseif #files > 0 then
-    noctalia.runAsync({ heyclaude, "ask", noctalia.json.encode({ text = text, files = files }) })
+    noctalia.runAsync({ heymorgan, "ask", noctalia.json.encode({ text = text, files = files }) })
     noctalia.state.set("attachments", {})
   else
-    noctalia.runAsync({ heyclaude, "type", text })
+    noctalia.runAsync({ heymorgan, "type", text })
   end
   noctalia.state.set("draft", "")
   draft += 1
@@ -511,7 +511,7 @@ render = function()
       controlSize = "sm",
       tooltip = "Open as a window of its own, to tile or keep on a workspace",
       onClick = function()
-        noctalia.runAsync({ heyclaude, "window" })
+        noctalia.runAsync({ heymorgan, "window" })
         panel.close()
       end,
     }),
@@ -546,7 +546,7 @@ render = function()
       controlSize = "sm",
       tooltip = "Start a new conversation",
       onClick = function()
-        noctalia.runAsync({ heyclaude, "new" })
+        noctalia.runAsync({ heymorgan, "new" })
       end,
     }),
   })
@@ -578,7 +578,7 @@ render = function()
       tooltip = if state == "idle" then "Speak" elseif state == "listening" then "Send what you've said" else "Stop",
       onClick = function()
         -- Mid-answer, the button cuts Morgan off; otherwise it starts or ends your turn.
-        noctalia.runAsync({ heyclaude, if state == "idle" or state == "listening" then "toggle" else "stop" })
+        noctalia.runAsync({ heymorgan, if state == "idle" or state == "listening" then "toggle" else "stop" })
       end,
     }),
   })

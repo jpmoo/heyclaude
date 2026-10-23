@@ -8,22 +8,25 @@
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
 
-if systemctl --user cat heyclaude.service >/dev/null 2>&1; then
-  ctl() { systemctl --user "$@"; }
-  where="user service"
-elif systemctl cat heyclaude.service >/dev/null 2>&1; then
-  ctl() { sudo systemctl "$@"; }
-  where="system service"
-else
-  echo "==> No heyclaude service is installed here. See systemd/ for the unit." >&2
+# The unit is heymorgan.service; one not yet switched over is still heyclaude.service.
+unit=""
+for name in heymorgan heyclaude; do
+  if systemctl --user cat "$name.service" >/dev/null 2>&1; then
+    ctl() { systemctl --user "$@"; }; where="user service"; unit=$name; break
+  elif systemctl cat "$name.service" >/dev/null 2>&1; then
+    ctl() { sudo systemctl "$@"; }; where="system service"; unit=$name; break
+  fi
+done
+if [ -z "$unit" ]; then
+  echo "==> No Morgan service is installed here. See systemd/ for the unit." >&2
   exit 1
 fi
 
 # If any step below fails, don't walk away leaving Morgan stopped.
-trap 'echo "==> FAILED — bringing heyclaude back up on the previous state"; ctl start heyclaude || true' ERR
+trap 'echo "==> FAILED — bringing $unit back up on the previous state"; ctl start "$unit" || true' ERR
 
-echo "==> Stopping heyclaude ($where)…"
-ctl stop heyclaude || true
+echo "==> Stopping $unit ($where)…"
+ctl stop "$unit" || true
 
 echo "==> Pulling latest…"
 git pull --ff-only
@@ -34,9 +37,9 @@ npm ci --no-audit --no-fund
 
 echo "==> Checking it parses…"
 # A syntax error would otherwise only show as a service that keeps restarting.
-for file in *.mjs bin/heyclaude; do node --check "$file"; done
+for file in *.mjs bin/heymorgan; do node --check "$file"; done
 
-echo "==> Starting heyclaude…"
-ctl start heyclaude
+echo "==> Starting $unit…"
+ctl start "$unit"
 sleep 2
-ctl status heyclaude --no-pager --lines 5
+ctl status "$unit" --no-pager --lines 5

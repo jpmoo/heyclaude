@@ -45,7 +45,7 @@ HOST=0.0.0.0
 
 Everything else — the name, the voice, Ollama's address and model, the Oracle's
 model, MCP servers, folders, thresholds — is still set from the laptop: the
-settings window and `heyclaude settings` work as now, but what they change is
+settings window and `heymorgan settings` work as now, but what they change is
 saved on the server, in its config file (`data/config.json` in the checkout), and
 taken up there. The laptop keeps one setting of its own: where its server is.
 
@@ -56,7 +56,7 @@ laptop goes through Tailscale to Caddy on 8083, under the project's name (not
 the assistant's, which is a setting):
 
 ```caddy
-  handle_path /heyclaude* {
+  handle_path /heymorgan* {
     reverse_proxy 127.0.0.1:8790
   }
 ```
@@ -69,14 +69,14 @@ settings included; with Serve the tokens are a second lock.
 
 ### The laptop's own setting
 
-`~/.config/heyclaude/client.json`:
+`~/.config/heymorgan/client.json`:
 
 ```json
 { "server": "home-server:8790" }
 ```
 
 Set from the settings window (a "Morgan's home" field on the Connections tab) or
-`heyclaude settings`. Left empty, the laptop runs the whole of Morgan itself, as
+`heymorgan settings`. Left empty, the laptop runs the whole of Morgan itself, as
 it does today; that stays possible during the move and after it, for a laptop
 away from home with no Tailscale.
 
@@ -130,14 +130,14 @@ The server app issues the keys that let client apps in; nothing reaches Morgan
 without one.
 
 - **Issued by the server, one per device.** On the home server,
-  `heyclaude access add laptop` prints a new key once (`hc_` and 32 random bytes,
+  `heymorgan access add laptop` prints a new key once (`hc_` and 32 random bytes,
   base64url). The server keeps only its hash, with the device's name, when it was
-  made and when it was last used, in `data/access.json`. (`heyclaude key` is the
-  memory key's command, so these are `heyclaude access`.)
+  made and when it was last used, in `data/access.json`. (`heymorgan key` is the
+  memory key's command, so these are `heymorgan access`.)
 - **Entered on the device**, beside "Morgan's home" in its settings, and kept in
   its `client.json`.
-- **Listed and revoked** with `heyclaude access list` and
-  `heyclaude access remove kitchen-dot` on the server, or from the settings window
+- **Listed and revoked** with `heymorgan access list` and
+  `heymorgan access remove kitchen-dot` on the server, or from the settings window
   of a laptop that is already connected (a Keys card on the Connections tab).
   A revoked key's connection is closed at once.
 - **The first key is made on the server**, from its terminal; after that, keys
@@ -266,14 +266,14 @@ the AI server, and `tests/steps.py` shows no slower a first word than now.
   memory key leaves the laptop's login keyring for a file readable only by the
   service's account, or a systemd credential, on the server.
 - The settings operations (`admin`) go over the connection, so the settings
-  window and `heyclaude settings` edit the server's config from the laptop.
+  window and `heymorgan settings` edit the server's config from the laptop.
 - The laptop gains its one setting, "Morgan's home" (`host:port`).
 - Log the Oracle in there, once, with its own config directories, as now.
 - Add the WebSocket endpoint and the protocol above, alongside the existing
   control socket while the laptop moves over.
 - Make the laptop a client: a small client process does the microphone, wake,
   echo cancellation and playback, and offers screen, clipboard, camera, files,
-  hotkey and Escape as abilities. The plugin, window and `heyclaude` command talk
+  hotkey and Escape as abilities. The plugin, window and `heymorgan` command talk
   to the server through it.
 
 *Done when* the laptop works as it does today with the daemon on the home server,

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// heyclaude daemon: microphone -> speech-to-text -> Morgan -> text-to-speech.
+// heymorgan daemon: microphone -> speech-to-text -> Morgan -> text-to-speech.
 //
 // Morgan is a local model served by Ollama and answers everything it can.
 // When a question is beyond it, Morgan calls consult_oracle, which asks Claude
@@ -7,7 +7,7 @@
 // back for Morgan to relay. A Unix socket takes commands (toggle, say, stop,
 // new, status, watch) and streams events.
 
-import { ROLE, CLIENT, CLIENT_FILE, MIRROR } from "./env.mjs"; // first: which part this copy plays, and where things are kept
+import { ROLE, CLIENT, CLIENT_FILE, CONFIG_HOME, MIRROR, SHARE } from "./env.mjs"; // first: which part this copy plays, and where things are kept
 import { execFile, spawn, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import { connect, createServer } from "node:net";
@@ -17,7 +17,7 @@ import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { McpClient } from "./mcp.mjs";
-import { BASICS, KOKORO, KOKORO_VOICES, STARTER_TOPICS, readOnly, readSealed, toolAllowed, writeSealed } from "./lib.mjs";
+import { BASICS, KOKORO, KOKORO_VOICES, STARTER_TOPICS, readOnly, serviceName, readSealed, toolAllowed, writeSealed } from "./lib.mjs";
 import { fileURLToPath } from "node:url";
 import { Transcript, describe, describeThread } from "./history.mjs";
 import * as wake from "./wake.mjs";
@@ -29,12 +29,13 @@ import { createAccess } from "./access.mjs";
 import * as voiceprint from "./speaker.mjs";
 
 const HOME = homedir();
-const CONFIG_HOME = join(HOME, ".config", "heyclaude");
 const RUNTIME = process.env.XDG_RUNTIME_DIR ?? "/tmp";
-const SOCKET = process.env.HEYCLAUDE_SOCKET ?? join(RUNTIME, "heyclaude.sock");
-const WORKDIR = join(HOME, ".local", "share", "heyclaude", "work");
+// The command socket. Until Talaris and the plugin have moved over, the old
+// name is answered too (protocol 1.1); dropping it is protocol 2.0.
+const SOCKETS = process.env.HEYMORGAN_SOCKET ? [process.env.HEYMORGAN_SOCKET] : [join(RUNTIME, "heymorgan.sock"), join(RUNTIME, "heyclaude.sock")];
+const WORKDIR = join(SHARE, "work");
 // The latest of what Morgan writes to its log, kept as well as written, so that
-// the settings window can show it (`heyclaude log`, or the Log tab).
+// the settings window can show it (`heymorgan log`, or the Log tab).
 const logLines = [];
 for (const level of ["log", "warn", "error"]) {
   const write = console[level].bind(console);
@@ -48,10 +49,10 @@ for (const level of ["log", "warn", "error"]) {
   };
 }
 
-const MEMORY = process.env.HEYCLAUDE_MEMORY ?? join(HOME, ".local", "share", "heyclaude", "memory");
+const MEMORY = process.env.HEYMORGAN_MEMORY ?? join(SHARE, "memory");
 
 // Where install.sh puts whisper.cpp, Piper and their models.
-const SPEECH = join(HOME, ".local", "share", "heyclaude");
+const SPEECH = SHARE;
 const WHISPER = join(SPEECH, "whisper.cpp", "build", "bin", "whisper-cli");
 const PIPER = join(SPEECH, "piper", "piper");
 
@@ -109,14 +110,14 @@ const defaults = {
   // Said aloud, this starts a turn: "Hey Morgan, what time is it?" The
   // microphone then stays open and speech is transcribed on this machine to
   // look for the phrase; anything else is thrown away. null turns it off,
-  // leaving `heyclaude toggle`.
+  // leaving `heymorgan toggle`.
   wakeWord: BASICS.wakeWord,
   // How the wake word is listened for: "spotter" is a small model that hears
   // only that; "transcribe" writes down everything said and looks for it,
   // which costs far more in a room full of talk. The spotter falls back to
   // transcribing when it cannot be loaded or cannot spell the phrase.
   wakeEngine: "spotter",
-  // Once a voice has been taught (heyclaude settings), speech in any other
+  // Once a voice has been taught (heymorgan settings), speech in any other
   // voice is ignored. The score is how like the taught voice it must be, from
   // 0 to 1; short remarks are held to a lower bar, there being less to go on.
   knownVoicesOnly: true,
@@ -140,7 +141,7 @@ const defaults = {
     : null,
   // The assistant's name and the wake phrase are added to these by themselves.
   sttPrompt: "The Oracle, Hyprland, Noctalia, Hermes Notes, Talaria.",
-  // A Piper voice, by name: `heyclaude voice` lists and fetches them.
+  // A Piper voice, by name: `heymorgan voice` lists and fetches them.
   // "kokoro" (more natural) or "piper" (lighter). Kokoro falls back to Piper
   // if it cannot be started.
   engine: BASICS.engine,
@@ -180,7 +181,7 @@ const defaults = {
   threadScore: 0.55,
 };
 
-const configPath = process.env.HEYCLAUDE_CONFIG ?? join(CONFIG_HOME, "config.json");
+const configPath = process.env.HEYMORGAN_CONFIG ?? join(CONFIG_HOME, "config.json");
 const user = existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf8")) : {};
 const cfg = {
   ...defaults,
@@ -234,7 +235,7 @@ const turnNotes = () => [
 ].filter(Boolean).join("\n\n");
 
 // The Kokoro voice runs as a helper that keeps its model loaded.
-const KOKORO_SOCKET = process.env.HEYCLAUDE_SOCKET ? `${process.env.HEYCLAUDE_SOCKET}.tts` : join(RUNTIME, "heyclaude-tts.sock");
+const KOKORO_SOCKET = process.env.HEYMORGAN_SOCKET ? `${process.env.HEYMORGAN_SOCKET}.tts` : join(RUNTIME, "heymorgan-tts.sock");
 let kokoroHelper = null;
 let kokoroReady = false;
 
@@ -517,7 +518,7 @@ async function capture(source, args) {
     const got = await askClient("capture", { source, whole_screen: Boolean(args?.whole_screen), patient: Boolean(args?.patient) });
     return got?.text !== undefined ? { text: got.text } : Buffer.from(String(got?.data ?? ""), "base64");
   }
-  const file = join(RUNTIME, `heyclaude-look-${process.pid}.${source === "camera" ? "jpg" : "png"}`);
+  const file = join(RUNTIME, `heymorgan-look-${process.pid}.${source === "camera" ? "jpg" : "png"}`);
   try {
     if (source === "screen") {
       const shell = (command) => run("sh", ["-c", command]).then((result) => JSON.parse(result.stdout));
@@ -630,7 +631,7 @@ async function rememberPicture(args) {
   const source = String(args.source ?? "camera");
   if (!slug(label)) return "No label given.";
   if (!cfg.sight.includes(source)) return "You are not allowed to look at that.";
-  const file = join(RUNTIME, `heyclaude-keep-${process.pid}`);
+  const file = join(RUNTIME, `heymorgan-keep-${process.pid}`);
   try {
     const fresh = lastLook && lastLook.source === source && Date.now() - lastLook.t < 120_000;
     const bytes = fresh ? lastLook.bytes : await capture(source, args);
@@ -1096,7 +1097,7 @@ async function rememberFacts(text) {
       }),
     });
     answer = JSON.parse((await response.json()).message.content);
-    if (process.env.HEYCLAUDE_DEBUG) console.error("remember", JSON.stringify(answer), JSON.stringify(near.map((entry) => entry.note.slice(0, 60))));
+    if (process.env.HEYMORGAN_DEBUG) console.error("remember", JSON.stringify(answer), JSON.stringify(near.map((entry) => entry.note.slice(0, 60))));
   } catch (error) {
     console.error(`remember: ${error.message}`);
     return;
@@ -1147,7 +1148,7 @@ async function rememberFacts(text) {
         `Held note: ${bareNote(entry.note)}\n\nWhat ${who} said: ${text}\n\nRewritten: ${rewritten}`,
         { faithful: { type: "boolean" } },
       );
-      if (process.env.HEYCLAUDE_DEBUG) console.error("faithful", verdict.faithful, rewritten);
+      if (process.env.HEYMORGAN_DEBUG) console.error("faithful", verdict.faithful, rewritten);
       if (!verdict.faithful) continue;
     } catch { continue; }
     const topic = readTopic(entry.topic);
@@ -1384,9 +1385,9 @@ let escapeBound = false;
 
 function bindEscape(want) {
   // A trial run on a socket of its own leaves the keyboard alone.
-  if (want === escapeBound || !process.env.HYPRLAND_INSTANCE_SIGNATURE || process.env.HEYCLAUDE_SOCKET) return;
+  if (want === escapeBound || !process.env.HYPRLAND_INSTANCE_SIGNATURE || process.env.HEYMORGAN_SOCKET) return;
   escapeBound = want;
-  const stop = join(HOME, ".local", "bin", "heyclaude");
+  const stop = join(HOME, ".local", "bin", "heymorgan");
   execFile("hyprctl", ["keyword", ...(want ? ["bindn", `, escape, exec, ${stop} stop`] : ["unbind", ", escape"])], () => {});
 }
 
@@ -1399,7 +1400,7 @@ function fail(message) {
 //
 // One file per topic: the first line is the topic's name, the second its
 // description, then one "- note" per line. Sealed on disk (see lib.mjs);
-// `heyclaude settings` shows what is remembered.
+// `heymorgan settings` shows what is remembered.
 
 let interviewing = false;
 
@@ -1499,7 +1500,7 @@ async function pickNotes(text) {
   // Who the user is and how they like to be dealt with bear on every turn.
   const always = (topic) => /^about\b/i.test(topic) || /^preferences$/i.test(topic);
   const chosen = [...all.filter((entry) => always(entry.topic)).slice(0, 14), ...scored.filter((entry) => !always(entry.topic) && entry.score >= cfg.noteScore).slice(0, cfg.notesShown)];
-  if (process.env.HEYCLAUDE_DEBUG) console.error("notes", scored.slice(0, 6).map((entry) => `${entry.score.toFixed(2)} ${entry.note.slice(0, 40)}`));
+  if (process.env.HEYMORGAN_DEBUG) console.error("notes", scored.slice(0, 6).map((entry) => `${entry.score.toFixed(2)} ${entry.note.slice(0, 40)}`));
   const byTopic = new Map();
   for (const entry of chosen) byTopic.set(entry.topic, [...(byTopic.get(entry.topic) ?? []), entry.note]);
   return [...byTopic].map(([topic, notes]) => `${topic}\n${notes.map((note) => `- ${note}`).join("\n")}`).join("\n\n");
@@ -2164,7 +2165,7 @@ async function mcpTool(name, args) {
   } catch (error) {
     result = `The tool failed: ${error.message}`;
   }
-  // Kept in memory only, for `heyclaude tools`: when an answer is wrong, this
+  // Kept in memory only, for `heymorgan tools`: when an answer is wrong, this
   // says whether the tool was asked the wrong thing or answered it wrongly.
   toolLog.push({ t: Date.now(), name, args, result: result.slice(0, 400) });
   if (toolLog.length > 40) toolLog.shift();
@@ -2178,8 +2179,8 @@ const transcript = new Transcript({
   // A client keeps no transcript (the server does), and never opens the one left
   // from when it ran Morgan itself: with the keyring's key changed, reading it
   // had the laptop crash at every start.
-  dir: ROLE === "client" ? join(RUNTIME, "heyclaude-client-has-no-transcript")
-    : process.env.HEYCLAUDE_MEMORY ? join(MEMORY, "history") : join(SPEECH, "history"),
+  dir: ROLE === "client" ? join(RUNTIME, "heymorgan-client-has-no-transcript")
+    : process.env.HEYMORGAN_MEMORY ? join(MEMORY, "history") : join(SPEECH, "history"),
   url: cfg.ollama.url,
   model: cfg.embedModel,
 });
@@ -2615,11 +2616,11 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
     // exchange on its own ("yes, do that") often says nothing.
     const timely = sorted.lookup || sorted.about === "current"; // about how things stand now
     const threads = timely ? [] : (await transcript.searchThreads({ query: text, to: began, limit: 2 })).filter((hit) => hit.score >= cfg.threadScore);
-    if (process.env.HEYCLAUDE_DEBUG) console.error("threads", threads.map((hit) => `${hit.score.toFixed(2)} ${hit.thread.title}`));
+    if (process.env.HEYMORGAN_DEBUG) console.error("threads", threads.map((hit) => `${hit.score.toFixed(2)} ${hit.thread.title}`));
     remembered = threads;
     const inThreads = new Set(threads.flatMap((hit) => hit.thread.ts));
     const hits = (await transcript.search({ query: text, to: began, limit: 6 })).filter((hit) => !inThreads.has(hit.item.t) && transcript.unthreaded().includes(hit.item));
-    if (process.env.HEYCLAUDE_DEBUG) console.error("recall", hits.map((hit) => `${hit.score.toFixed(2)} ${hit.item.live ? "live " : ""}${hit.item.user.slice(0, 40)}`));
+    if (process.env.HEYMORGAN_DEBUG) console.error("recall", hits.map((hit) => `${hit.score.toFixed(2)} ${hit.item.live ? "live " : ""}${hit.item.user.slice(0, 40)}`));
     // An old answer that came from a calendar, a task list, the web or the
     // camera is a record of how things stood, not of how they stand. Shown
     // unasked, it gets repeated in place of looking again; so it is not shown,
@@ -3406,7 +3407,7 @@ let spokenTurn = false; // the turn in progress came from the microphone
 // PipeWire's echo canceller, loaded for as long as the daemon runs: a second
 // microphone with whatever the speakers are playing subtracted from it. The
 // system's own default devices are left as they are.
-const CLEAN_MIC = "heyclaude.mic";
+const CLEAN_MIC = "heymorgan.mic";
 let canceller = null;
 
 function startCanceller() {
@@ -3415,8 +3416,8 @@ function startCanceller() {
   canceller.on("error", () => { canceller = null; });
   canceller.on("exit", () => { canceller = null; });
   canceller.stdin.write("load-module libpipewire-module-echo-cancel { library.name = aec/libspa-aec-webrtc monitor.mode = true"
-    + " capture.props = { node.name = heyclaude.ec.capture node.passive = true }"
-    + ` source.props = { node.name = ${CLEAN_MIC} node.description = "heyclaude microphone (echo cancelled)" priority.session = 1 } }\n`);
+    + " capture.props = { node.name = heymorgan.ec.capture node.passive = true }"
+    + ` source.props = { node.name = ${CLEAN_MIC} node.description = "Morgan microphone (echo cancelled)" priority.session = 1 } }\n`);
 }
 
 // Whose voice: null until a model is there to tell.
@@ -3526,7 +3527,7 @@ function onFrame(frame) {
   if (!active && state === "transcribing") return resetUtterance();
   if (spot && !active) {
     const hit = spot.feed(frame);
-    if (hit && process.env.HEYCLAUDE_DEBUG) console.error(`spotter: "${hit}" state=${state} utterance=${Boolean(utterance)} checking=${checkingWake}`);
+    if (hit && process.env.HEYMORGAN_DEBUG) console.error(`spotter: "${hit}" state=${state} utterance=${Boolean(utterance)} checking=${checkingWake}`);
     if (hit && busy()) {
       // Either word cuts an answer short; what follows is the user's turn.
       // There is no whole utterance yet to judge the voice by, only the last
@@ -3580,7 +3581,7 @@ function onFrame(frame) {
 function endUtterance() {
   const pcm = Buffer.concat(utterance.frames);
   const spotted = wakeHit >= utterance.t - 600;
-  if (process.env.HEYCLAUDE_DEBUG) console.error(`utterance: ${(pcm.length / 32000).toFixed(1)}s state=${state} active=${Boolean(active)} spotted=${spotted} checking=${checkingWake}`);
+  if (process.env.HEYMORGAN_DEBUG) console.error(`utterance: ${(pcm.length / 32000).toFixed(1)}s state=${state} active=${Boolean(active)} spotted=${spotted} checking=${checkingWake}`);
   resetUtterance();
   if (active && enrolling) {
     enrolStep(pcm);
@@ -3746,7 +3747,7 @@ let wavCount = 0;
 function transcribe(pcm) {
   return new Promise((resolve, reject) => {
     if (!cfg.stt) return reject(new Error("no speech-to-text command configured (stt)"));
-    const file = join(RUNTIME, `heyclaude-${process.pid}-${wavCount++}.wav`);
+    const file = join(RUNTIME, `heymorgan-${process.pid}-${wavCount++}.wav`);
     const header = Buffer.alloc(44);
     header.write("RIFF", 0); header.writeUInt32LE(36 + pcm.length, 4); header.write("WAVEfmt ", 8);
     header.writeUInt32LE(16, 16); header.writeUInt16LE(1, 20); header.writeUInt16LE(1, 22);
@@ -4001,11 +4002,10 @@ const admin = createAdmin({
   // Settings the running daemon cannot simply pick up: start again, once the answer has gone.
   // A server's service restarts it when it exits (Restart=always).
   restartSoon: () => setTimeout(() => (ROLE === "server" ? process.exit(0)
-    : spawn("systemctl", ["--user", "restart", "heyclaude.service"], { stdio: "ignore", detached: true }).unref()), 400),
+    : spawn("systemctl", ["--user", "restart", serviceName()], { stdio: "ignore", detached: true }).unref()), 400),
 });
 
-rmSync(SOCKET, { force: true });
-const server = createServer((socket) => {
+function onCommand(socket) {
   let buffer = "";
   let handled = false;
   socket.setEncoding("utf8");
@@ -4023,8 +4023,11 @@ const server = createServer((socket) => {
   });
   socket.on("close", () => watchers.delete(socket));
   socket.on("error", () => watchers.delete(socket));
+}
+const servers = SOCKETS.map((path) => {
+  rmSync(path, { force: true });
+  return createServer(onCommand).listen(path, () => console.error(`heymorgan listening on ${path}`));
 });
-server.listen(SOCKET, () => console.error(`heyclaude listening on ${SOCKET}`));
 
 // ---------------------------------------------------------------- clients (on a server)
 //
@@ -4060,7 +4063,7 @@ function askClient(name, args = {}, wait = 60_000) {
   });
 }
 
-const access = createAccess(join(process.env.HEYCLAUDE_DATA ?? CONFIG_HOME, "access.json"));
+const access = createAccess(join(process.env.HEYMORGAN_DATA ?? CONFIG_HOME, "access.json"));
 const links = new Map(); // a client's socket -> { name, kind, can }
 
 // What a client is told of the settings: not the services' addresses and keys.
@@ -4260,7 +4263,7 @@ async function clientCommand(command, rest, line, reply) {
   const answer = await remote(line, command === "admin" ? 300_000 : 45_000);
   // A saved picture to look at in settings: put where this machine can show it.
   if (command === "admin" && /"op"\s*:\s*"memory\.picture\.view"/.test(line) && answer?.ok && answer.data) {
-    const file = join(RUNTIME, `heyclaude-view-${Date.now()}.jpg`);
+    const file = join(RUNTIME, `heymorgan-view-${Date.now()}.jpg`);
     writeFileSync(file, Buffer.from(answer.data, "base64"), { mode: 0o600 });
     setTimeout(() => rmSync(file, { force: true }), 120_000).unref();
     answer.path = file;
@@ -4276,7 +4279,7 @@ async function clientCommand(command, rest, line, reply) {
 }
 
 if (ROLE === "client") {
-  if (!CLIENT.key) console.error(`home: ${CLIENT_FILE} names a server but gives no key; ask the server for one with \`heyclaude access add <device>\``);
+  if (!CLIENT.key) console.error(`home: ${CLIENT_FILE} names a server but gives no key; ask the server for one with \`heymorgan access add <device>\``);
   connectHome();
 }
 
@@ -4284,7 +4287,7 @@ if (ROLE === "server") {
   const { WebSocketServer } = await import("ws");
   const port = Number(process.env.PORT);
   const listener = new WebSocketServer({ port, host: process.env.HOST ?? "0.0.0.0", maxPayload: 32 * 1024 * 1024 });
-  listener.on("listening", () => console.error(`heyclaude serving clients on port ${port}`));
+  listener.on("listening", () => console.error(`heymorgan serving clients on port ${port}`));
   listener.on("error", (error) => console.error(`clients: ${error.message}`));
   listener.on("connection", (link, request) => {
     const from = request.headers["x-forwarded-for"] ?? request.socket.remoteAddress;
@@ -4381,8 +4384,8 @@ function shutdown() {
   stopSpeech();
   stopOracle();
   for (const client of mcpClients.values()) client.stop();
-  server.close();
-  rmSync(SOCKET, { force: true });
+  for (const server of servers) server.close();
+  for (const path of SOCKETS) rmSync(path, { force: true });
   process.exit(0);
 }
 process.on("SIGINT", shutdown);

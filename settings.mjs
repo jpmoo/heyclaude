@@ -1,4 +1,4 @@
-// heyclaude settings: numbered menus over config.json. Every change is saved
+// heymorgan settings: numbered menus over config.json. Every change is saved
 // as it is made; the daemon is restarted once, on the way out.
 
 import { spawn, spawnSync } from "node:child_process";
@@ -6,7 +6,7 @@ import { existsSync, readdirSync, rmSync, statSync, writeFileSync } from "node:f
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import {
-  BASICS, CONFIG, KOKORO, KOKORO_VOICES, MEMORY, PIPER, VOICES, VOICE_REPO,
+  BASICS, CONFIG, KOKORO, SPEECH, KOKORO_VOICES, MEMORY, PIPER, VOICES, VOICE_REPO,
   fetchVoice, loadConfig, oracleEnv, readOnly, toolAllowed, previewVoice, readSealed, restartDaemon, saveConfig, voiceFile, writeSealed,
 } from "./lib.mjs";
 import { McpClient } from "./mcp.mjs";
@@ -107,7 +107,7 @@ async function assistant() {
     } else if (choice === "interview") {
       if (changed) { restartDaemon(); changed = false; spawnSync("sleep", ["1.5"]); }
       spawnSync(process.argv[1], ["interview"], { stdio: "ignore" });
-      console.log(`The interview has begun: answer aloud, or run ${bold("heyclaude chat")} to answer by typing.`);
+      console.log(`The interview has begun: answer aloud, or run ${bold("heymorgan chat")} to answer by typing.`);
     } else if (choice === "memory") {
       await memory();
 
@@ -703,7 +703,7 @@ async function sightMenu() {
       const answer = await menu(read(file).label, [{ key: "view", label: "View it" }, { key: "delete", label: "Delete it" }]);
       if (answer === "view") {
         // Shown from memory-backed storage, and removed as soon as the viewer closes.
-        const shown = join(process.env.XDG_RUNTIME_DIR ?? "/tmp", `heyclaude-view-${process.pid}.jpg`);
+        const shown = join(process.env.XDG_RUNTIME_DIR ?? "/tmp", `heymorgan-view-${process.pid}.jpg`);
         writeFileSync(shown, Buffer.from(read(file).data, "base64"), { mode: 0o600 });
         foreground("sh", ["-c", `(command -v imv >/dev/null && imv '${shown}') || (command -v eog >/dev/null && eog '${shown}') || xdg-open '${shown}'; sleep 1`]);
         await ask("Press Enter when you have seen it.");
@@ -774,7 +774,7 @@ async function teachVoice() {
 }
 
 async function voicesMenu() {
-  if (!existsSync(join(process.env.HOME, ".local", "share", "heyclaude", "speaker"))) return console.log("The voice model is not installed.");
+  if (!existsSync(join(SPEECH, "speaker"))) return console.log("The voice model is not installed.");
   for (;;) {
     const prints = voiceprints();
     const only = config.knownVoicesOnly ?? true;
@@ -807,7 +807,7 @@ async function listeningMenu() {
   for (;;) {
     const wake = "wakeWord" in config ? config.wakeWord : `Hey ${config.name ?? BASICS.name}`;
     const choice = await menu("Listening", [
-      { key: "wake", label: "Wake phrase", value: wake ?? "off: the microphone opens only on heyclaude toggle" },
+      { key: "wake", label: "Wake phrase", value: wake ?? "off: the microphone opens only on heymorgan toggle" },
       { key: "off", label: wake ? "Turn the wake phrase off" : "Turn the wake phrase on" },
       { key: "voices", label: "Voices it answers to", value: voicesSummary() },
       { key: "interrupt", label: "Word that interrupts an answer", value: ("interruptWord" in config ? config.interruptWord : config.name ?? BASICS.name) ?? "off" },
@@ -849,7 +849,7 @@ export async function run() {
   listen();
   for (;;) {
     const wake = "wakeWord" in config ? config.wakeWord : `Hey ${config.name ?? BASICS.name}`;
-    const choice = await menu(`heyclaude settings ${dim(CONFIG)}`, [
+    const choice = await menu(`heymorgan settings ${dim(CONFIG)}`, [
       { key: "assistant", label: "Assistant", value: config.name ?? BASICS.name },
       { key: "memory", label: "Memory", value: `${topicFiles().length} topics, ${documentFiles().length} documents` },
       { key: "ollama", label: "Ollama", value: `${ollama().model} at ${ollama().url}` },

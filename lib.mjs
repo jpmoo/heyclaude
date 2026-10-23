@@ -1,21 +1,19 @@
 // What the daemon, the command and the settings menu all need to agree on.
 
-import { ROLE, TRIAL } from "./env.mjs"; // first: it settles where things are kept
+import { CONFIG_HOME, ROLE, SHARE, TRIAL } from "./env.mjs"; // first: it settles where things are kept
 
 import { spawnSync } from "node:child_process";
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-const HOME = homedir();
-export const CONFIG_HOME = join(HOME, ".config", "heyclaude");
-export const CONFIG = process.env.HEYCLAUDE_CONFIG ?? join(CONFIG_HOME, "config.json");
-export const SPEECH = join(HOME, ".local", "share", "heyclaude");
+export { CONFIG_HOME };
+export const CONFIG = process.env.HEYMORGAN_CONFIG ?? join(CONFIG_HOME, "config.json");
+export const SPEECH = SHARE;
 export const VOICES = join(SPEECH, "voices");
 export const PIPER = join(SPEECH, "piper", "piper");
-export const MEMORY = process.env.HEYCLAUDE_MEMORY ?? join(SPEECH, "memory");
+export const MEMORY = process.env.HEYMORGAN_MEMORY ?? join(SPEECH, "memory");
 export const VOICE_REPO = "https://huggingface.co/rhasspy/piper-voices/resolve/main";
 
 // The settings a person is expected to change, and what they start as.
@@ -122,10 +120,10 @@ let key = null;
 
 export function dataKey() {
   if (key) return key;
-  // On the server, a file only its account can read, put there by `heyclaude key import`.
-  const file = process.env.HEYCLAUDE_KEY_FILE;
+  // On the server, a file only its account can read, put there by `heymorgan key import`.
+  const file = process.env.HEYMORGAN_KEY_FILE;
   if (file) {
-    if (!existsSync(file)) throw new Error(`there is no memory key at ${file}: put one there with \`heyclaude key import\``);
+    if (!existsSync(file)) throw new Error(`there is no memory key at ${file}: put one there with \`heymorgan key import\``);
     key = Buffer.from(readFileSync(file, "utf8").trim(), "base64");
     if (key.length !== 32) throw new Error(`the memory key in ${file} is not the right size`);
     return key;
@@ -140,7 +138,7 @@ export function dataKey() {
   // A keyring that is locked or not yet up says so; one that answers with nothing has lost the key.
   if (result.status !== 0 && sealed && !result.stderr.trim()) {
     throw new Error("the login keyring has no memory key, but there is memory sealed with one: put that key back with "
-      + "`heyclaude key import` (`heyclaude key export` on the server shows it)");
+      + "`heymorgan key import` (`heymorgan key export` on the server shows it)");
   }
   if (result.status !== 0) throw new Error(`the login keyring did not give up the data key: ${result.stderr.trim().split("\n").pop()}`);
   key = Buffer.from(result.stdout.trim(), "base64");
@@ -171,9 +169,15 @@ export const writeSealed = (file, text) => writeFileSync(file, seal(text) + "\n"
 export const readOnly = (tool) => Boolean(tool.annotations?.readOnlyHint);
 export const toolAllowed = (spec, tool) => spec.tools?.[tool.name] ?? (spec.allow === "all" || readOnly(tool));
 
+// The service, under its old name where it has not been switched over yet.
+// On a server it is a system service, as the other apps there are.
+export function serviceName() {
+  const scope = ROLE === "server" ? [] : ["--user"];
+  return spawnSync("systemctl", [...scope, "cat", "heymorgan.service"], { stdio: "ignore" }).status === 0 ? "heymorgan.service" : "heyclaude.service";
+}
+
 export function restartDaemon() {
   if (TRIAL) return; // a trial configuration, not the service's
-  // On a server it is a system service, as the other apps there are.
-  if (ROLE === "server") spawnSync("sudo", ["systemctl", "restart", "heyclaude.service"], { stdio: "inherit" });
-  else spawnSync("systemctl", ["--user", "restart", "heyclaude.service"]);
+  if (ROLE === "server") spawnSync("sudo", ["systemctl", "restart", serviceName()], { stdio: "inherit" });
+  else spawnSync("systemctl", ["--user", "restart", serviceName()]);
 }

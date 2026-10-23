@@ -7,7 +7,7 @@ holds one of the things it ought to.
 
 Run it against a trial daemon, never the one in use:
 
-    HEYCLAUDE_SOCKET=... python3 tests/routing.py [label]
+    HEYMORGAN_SOCKET=... python3 tests/routing.py [label]
 """
 import json
 import os
@@ -21,7 +21,7 @@ kinds = []
 
 def send(command):
     link = socket.socket(socket.AF_UNIX)
-    link.connect(os.environ["HEYCLAUDE_SOCKET"])
+    link.connect(os.environ["HEYMORGAN_SOCKET"])
     link.sendall((command + "\n").encode())
     return link
 

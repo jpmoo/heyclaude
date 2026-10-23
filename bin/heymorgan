@@ -1,0 +1,278 @@
+#!/usr/bin/env node
+// heymorgan chat                                                             (typed conversation)
+// heymorgan settings                                                         (menus for everything below)
+// heymorgan toggle | say <text> | type <text> | stop | new | interview | status | watch
+// heymorgan voice [name]                                                     (list voices, or switch to one)
+// heymorgan login | logout | account                                         (the Oracle's Claude login)
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { connect } from "node:net";
+import { dirname, join, resolve } from "node:path";
+import { homedir } from "node:os";
+import { createInterface } from "node:readline";
+import { BASICS, VOICES, fetchVoice, loadConfig, oracleEnv, restartDaemon, saveConfig, serviceName } from "../lib.mjs";
+
+const args = process.argv.slice(2);
+const ORACLE = { login: ["auth", "login", "--claudeai"], logout: ["auth", "logout"], account: ["auth", "status", "--text"] };
+
+if (!args.length || ["help", "-h", "--help"].includes(args[0])) {
+  console.error([
+    "heymorgan settings              menus: Ollama, the Oracle's login, voices, MCP servers, listening",
+    "heymorgan window                the conversation as an ordinary application window",
+    "heymorgan chat                  a typed conversation in the terminal",
+    "heymorgan toggle                start listening, or send what has been said",
+    "heymorgan say|type <text>       a turn answered aloud | in text only",
+    "heymorgan stop | new            cut the answer off | start a fresh conversation",
+    "heymorgan interview             the orientation interview",
+    "heymorgan voice [name]          list voices | switch to one",
+    "heymorgan login|logout|account  the Oracle's Claude login",
+    "heymorgan status | watch        the daemon's state | its event stream",
+    "heymorgan attach <file>...      put files on your next message in the chat window",
+    "heymorgan reminders             timers and reminders that are set",
+    "heymorgan key export | import   write down, or put back, the key that unlocks memory",
+    "heymorgan threads               earlier conversations, as the threads they were cut into",
+    "heymorgan tools                 the last few tool calls and what came back",
+    "heymorgan log [-f]              what the assistant has logged lately | follow it as it happens",
+    "heymorgan connect <server> <key> [device]   make this machine a client of a server (host:port, or https://host/heymorgan)",
+    "heymorgan disconnect            run the whole assistant on this machine again",
+    "heymorgan access add|list|remove [device]   on a server: the keys that let client apps in",
+    "heymorgan admin <json>          what the settings window uses: { op, args }",
+  ].join("\n"));
+  process.exit(args.length ? 0 : 2);
+}
+
+// The file choosers, run from here and not from the plugin: a plugin waits
+// only so long for a command it starts, and gave up on the chooser (closing
+// it) before a file had been picked. Started through this command, detached,
+// the chooser stays for as long as it is needed and reports back when done.
+if (args[0] === "choose" || args[0] === "choose-folder") {
+  const shell = join(homedir(), ".local", "bin", "noctalia");
+  const folder = args[0] === "choose-folder";
+  const picked = spawnSync("zenity", folder
+    ? ["--file-selection", "--directory", "--title=A folder the assistant may read"]
+    : ["--file-selection", "--multiple", "--separator=\n", "--title=Attach to your message"], { encoding: "utf8" });
+  const paths = (picked.stdout ?? "").split("\n").filter(Boolean);
+  if (folder) {
+    if (paths[0]) {
+      const ask = (request) => JSON.parse(spawnSync(process.argv[1], ["admin", JSON.stringify(request)], { encoding: "utf8" }).stdout || "{}");
+      const folders = ask({ op: "config.get" }).folders ?? [];
+      ask({ op: "config.set", args: { values: { folders: [...folders.filter((entry) => entry !== paths[0]), paths[0]] } } });
+    }
+    spawnSync(shell, ["msg", "panel-open", "jpmoo/morgan:settings"], { stdio: "ignore" });
+  } else {
+    for (const file of paths) spawnSync(shell, ["msg", "plugin", "jpmoo/morgan:link", "all", "attach", file], { stdio: "ignore" });
+    spawnSync(shell, ["msg", "panel-open", "jpmoo/morgan:chat"], { stdio: "ignore" });
+  }
+  process.exit(0);
+}
+
+if (args[0] === "window") {
+  // Morgan as an ordinary application window; brought forward if it is already open.
+  const window = new URL("../window/window.py", import.meta.url).pathname;
+  spawn("python3", [window], { stdio: "ignore", detached: true }).unref();
+  process.exit(0);
+}
+
+if (args[0] === "attach") {
+  // Put files on the next message in the chat window, and bring the window up.
+  const shell = join(homedir(), ".local", "bin", "noctalia");
+  const files = args.slice(1).map((file) => resolve(file)).filter((file) => existsSync(file) || console.error(`heymorgan: no such file: ${file}`));
+  for (const file of files) spawnSync(shell, ["msg", "plugin", "jpmoo/morgan:link", "all", "attach", file], { stdio: "ignore" });
+  if (files.length) spawnSync(shell, ["msg", "panel-open", "jpmoo/morgan:chat"], { stdio: "ignore" });
+  process.exit(files.length ? 0 : 1);
+}
+
+// A pasted memory key, cleaned of what a paste brings with it (the terminal's
+// pasted-text markers, spaces, a line break, quotes), or a plain refusal that
+// says what it was instead.
+function memoryKey(pasted) {
+  const text = String(pasted).replace(/\x1b\[20[01]~/g, "").replace(/[\s"'`]/g, "");
+  const fail = (why) => { console.error(`heymorgan: ${why}`); process.exit(1); };
+  if (!text) fail("nothing was pasted");
+  if (text.startsWith("hc_")) fail("that is a device's access key (from `access add`), not the memory key: on the server run `./bin/heymorgan key export` and paste what it prints");
+  for (const form of ["base64", "base64url"]) {
+    const bytes = Buffer.from(text, form);
+    if (bytes.length === 32 && bytes.toString(form).replace(/=+$/, "") === text.replace(/=+$/, "")) return bytes.toString("base64");
+  }
+  fail(`that is not a memory key: it should be 44 characters ending in "=", and this is ${text.length} characters (perhaps only part of it was copied)`);
+}
+
+// One line from the terminal, done when Enter is pressed (reading to the end of
+// input waited for Ctrl+D, and a pasted key seemed to go nowhere). Blank lines
+// before it are skipped: a key copied from a terminal often brings the line
+// break before it, and that empty line was taken for the whole answer.
+function firstLine() {
+  return new Promise((resolve) => {
+    const input = createInterface({ input: process.stdin });
+    input.on("line", (line) => {
+      if (!line.replace(/\x1b\[20[01]~/g, "").trim()) return;
+      // Answered before closing: closing first set off the "nothing came" answer, and every paste read as empty.
+      resolve(line);
+      input.close();
+    });
+    input.once("close", () => resolve(""));
+  });
+}
+
+if (args[0] === "key") {
+  // The key that memory, documents, pictures and the transcript are sealed
+  // with lives in the login keyring. Written down somewhere safe, it can be
+  // put back if the keyring is ever lost.
+  const script = new URL("../keyring.py", import.meta.url).pathname;
+  const file = process.env.HEYMORGAN_KEY_FILE; // on the server, a file in place of the keyring
+  if (file && args[1] === "export") {
+    if (!existsSync(file)) { console.error(`heymorgan: there is no key at ${file}`); process.exit(1); }
+    console.log(readFileSync(file, "utf8").trim());
+  } else if (file && args[1] === "import") {
+    console.error(`Paste the key and press Enter. It is kept in ${file}, readable only by this account.`);
+    const line = memoryKey(await firstLine());
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, line + "\n", { mode: 0o600 });
+    console.error("The key is in place. Restart the service to take it up.");
+  } else if (args[1] === "export") {
+    const result = spawnSync("python3", [script, "--no-create"], { encoding: "utf8" });
+    if (result.status !== 0) { console.error("heymorgan: there is no key in the login keyring"); process.exit(1); }
+    console.error("This one line unlocks everything Morgan remembers. Keep it in a password manager or on paper, not in a file on this laptop.\n");
+    console.log(result.stdout.trim());
+  } else if (args[1] === "import") {
+    console.error("Paste the key and press Enter. It replaces any key in the login keyring, and what was sealed with that one can no longer be read.");
+    const line = memoryKey(await firstLine());
+    const result = spawnSync("python3", [script, "--set"], { input: line + "\n", encoding: "utf8" });
+    if (result.status !== 0) { console.error(`heymorgan: ${result.stderr.trim().split("\n").pop()}`); process.exit(1); }
+    restartDaemon();
+    console.error("The key is in the login keyring, and the assistant has been restarted.");
+  } else {
+    console.error("usage: heymorgan key export | import");
+    process.exit(2);
+  }
+  process.exit(0);
+}
+
+if (args[0] === "log" && (args[1] === "-f" || args[1] === "--follow")) {
+  spawnSync("journalctl", ["--user", "-u", serviceName(), "-f", "-n", "50", "-o", "cat"], { stdio: "inherit" });
+  process.exit(0);
+}
+
+if (args[0] === "connect" || args[0] === "disconnect") {
+  // Which server this machine is a client of, kept in client.json; none, and it runs Morgan itself.
+  const { CLIENT_FILE } = await import("../env.mjs");
+  if (args[0] === "connect") {
+    const [, server, key, device] = args;
+    if (!server || !key?.startsWith("hc_")) { console.error("usage: heymorgan connect <host:port | https://host/heymorgan> <key from `heymorgan access add` on the server> [device name]"); process.exit(2); }
+    mkdirSync(dirname(CLIENT_FILE), { recursive: true });
+    writeFileSync(CLIENT_FILE, JSON.stringify({ server, key, ...(device ? { device } : {}) }, null, 2) + "\n", { mode: 0o600 });
+    console.error(`This machine is now a client of ${server}.`);
+  } else {
+    rmSync(CLIENT_FILE, { force: true });
+    console.error("This machine runs the whole assistant itself again.");
+  }
+  restartDaemon();
+  process.exit(0);
+}
+
+if (args[0] === "settings") {
+  await (await import("../settings.mjs")).run();
+  process.exit(0);
+}
+
+if (ORACLE[args[0]]) {
+  const result = spawnSync("claude", [...ORACLE[args[0]], ...args.slice(1)], { env: oracleEnv(), stdio: "inherit" });
+  process.exit(result.status ?? 1);
+}
+
+if (args[0] === "voice") {
+  const config = loadConfig();
+  const name = args[1];
+  if (!name) {
+    const current = config.voice ?? BASICS.voice;
+    const installed = existsSync(VOICES) ? readdirSync(VOICES).filter((file) => file.endsWith(".onnx")).sort() : [];
+    for (const file of installed) console.log(`${file.slice(0, -5) === current ? "*" : " "} ${file.slice(0, -5)}`);
+    console.log("\nHear them all at https://rhasspy.github.io/piper-samples/ then: heymorgan voice <name>");
+    process.exit(0);
+  }
+  const problem = fetchVoice(name);
+  if (problem) {
+    console.error(`heymorgan: ${problem}`);
+    process.exit(1);
+  }
+  saveConfig({ ...config, voice: name });
+  restartDaemon();
+  spawnSync("sleep", ["1.5"]);
+  args.splice(0, args.length, "speak", "Hello, this is how I sound now.");
+}
+
+// A daemon from before the rename answers only on heymorgan.sock.
+const RUN = process.env.XDG_RUNTIME_DIR ?? "/tmp";
+const SOCKET = process.env.HEYMORGAN_SOCKET
+  ?? ["heymorgan.sock", "heymorgan.sock"].map((name) => join(RUN, name)).find((path) => existsSync(path))
+  ?? join(RUN, "heymorgan.sock");
+
+function open(command) {
+  const socket = connect(SOCKET);
+  socket.on("error", (error) => {
+    console.error(`heymorgan: daemon not reachable (${error.code})`);
+    process.exit(1);
+  });
+  socket.on("connect", () => socket.write(command + "\n"));
+  return socket;
+}
+
+if (args[0] === "chat") {
+  // A typed conversation in the terminal. Spoken turns show up here too.
+  const input = createInterface({ input: process.stdin, output: process.stdout, prompt: "> " });
+  const show = (text) => { process.stdout.write(`\r\x1b[K${text}\n`); input.prompt(true); };
+  const dim = (text) => `\x1b[2m${text}\x1b[0m`;
+  let waiting = false;
+  createInterface({ input: open("watch") }).on("line", (line) => {
+    const event = JSON.parse(line);
+    if (event.type === "user" && !waiting) show(`> ${event.text}`);
+    else if (event.type === "assistant") show(event.text);
+    else if (event.type === "consult") show(dim(`consulting the Oracle: ${event.question}`));
+    else if (event.type === "tool") show(dim(`using ${event.name}${event.args && Object.keys(event.args).length ? ` ${JSON.stringify(event.args)}` : ""}`));
+    else if (event.type === "oracle") show(dim(`the Oracle answered: ${event.text}`));
+    else if (event.type === "look") show(dim(`looking at the ${event.source}`));
+    else if (event.type === "confirm") show(dim(event.done === undefined ? `proposed ${event.name} ${JSON.stringify(event.args ?? {})}` : event.done ? `carried out ${event.name}` : `dropped ${event.name}`));
+    else if (event.type === "memory") show(dim(event.removed ? `took out of ${event.topic}: ${event.note}` : event.rewritten ? `reorganized ${event.topic}` : `remembered under ${event.topic}: ${event.note}`));
+    else if (event.type === "recall") show(dim(`recalling ${event.topic}`));
+    else if (event.type === "error") show(`error: ${event.message}`);
+    else if (event.type === "new") { process.stdout.write("\x1b[2J\x1b[H"); input.prompt(true); }
+    else if (event.type === "state" && event.state === "idle") waiting = false;
+  });
+  input.prompt();
+  input.on("line", (line) => {
+    const text = line.trim();
+    if (text === "/new" || text === "/interview" || text === "/stop") open(text.slice(1)).resume();
+    else if (text) { waiting = true; open(`type ${text}`).resume(); }
+    input.prompt();
+  });
+  input.on("close", () => process.exit(0));
+} else if (args[0] === "access") {
+  // On a server: show a new key plainly, since it is shown only this once.
+  let answer = "";
+  const socket = open(args.join(" "));
+  socket.on("data", (chunk) => { answer += chunk; });
+  socket.on("end", () => {
+    const reply = JSON.parse(answer);
+    if (!reply.ok) { console.error(`heymorgan: ${reply.error}`); process.exitCode = 1; return; }
+    if (reply.key) {
+      console.error(`A key for ${reply.name}. It is shown only now; on that device run:\n`);
+      console.log(`heymorgan connect <this server's address> ${reply.key} ${reply.name}`);
+    } else if (reply.keys) {
+      if (!reply.keys.length) console.log("No keys yet. Make one with: heymorgan access add <device>");
+      for (const key of reply.keys) console.log(`${key.name.padEnd(20)} made ${new Date(key.made).toLocaleDateString()}   last used ${key.used ? new Date(key.used).toLocaleString() : "never"}`);
+    } else console.error("Done.");
+  });
+} else if (args[0] === "log") {
+  // What the assistant has logged lately, oldest first; errors in red.
+  let answer = "";
+  const socket = open(`log ${Number(args[1]) || 100}`);
+  socket.on("data", (chunk) => { answer += chunk; });
+  socket.on("end", () => {
+    for (const line of JSON.parse(answer).lines ?? []) {
+      const colour = line.level === "error" ? "\x1b[31m" : line.level === "warn" ? "\x1b[33m" : "";
+      console.log(`${new Date(line.t).toLocaleTimeString()}  ${colour}${line.text}\x1b[0m`);
+    }
+  });
+} else {
+  open(args.join(" ")).pipe(process.stdout);
+}

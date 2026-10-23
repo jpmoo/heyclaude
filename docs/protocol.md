@@ -1,12 +1,19 @@
 # Morgan's client protocol
 
-**Version 1.0**, written 2026-10-23 from the code as it stands (`daemon.mjs`,
+**Version 1.1**, written 2026-10-23 from the code as it stands (`daemon.mjs`,
 `admin.mjs`, `env.mjs`, `access.mjs`). It describes what the daemon does, not
 what it was meant to do; where the two differ, or where the behavior would
 surprise someone building on it, a **Note** says so.
 
+- **1.1** (2026-10-23): Morgan's code was renamed from heyclaude to heymorgan
+  (`docs/rename.md`). The socket is `heymorgan.sock`, and `heyclaude.sock` is
+  still answered, as the same socket; the environment variables are
+  `HEYMORGAN_*`, and `HEYCLAUDE_*` are still read. A new client uses only the
+  new names.
+- **1.0** (2026-10-23): first written down.
+
 Everything that is not Morgan's brain — the Noctalia plugin, the conversation
-window, the `heyclaude` command, Talaris, a satellite such as the planned Echo
+window, the `heymorgan` command, Talaris, a satellite such as the planned Echo
 Dot — talks to the daemon in one of two ways:
 
 1. **The local socket** (§1–§4): a Unix socket on the same machine. This is what
@@ -42,10 +49,15 @@ commit.
 
 ## 1. The local socket
 
-- **Path:** `$HEYCLAUDE_SOCKET` if set, otherwise
-  `$XDG_RUNTIME_DIR/heyclaude.sock` (`/tmp/heyclaude.sock` with no
-  `XDG_RUNTIME_DIR`). On a server (§5) `HEYCLAUDE_SOCKET` defaults to
-  `data/heyclaude.sock` in the checkout instead.
+- **Path:** `$HEYMORGAN_SOCKET` if set, otherwise
+  `$XDG_RUNTIME_DIR/heymorgan.sock` (`/tmp/heymorgan.sock` with no
+  `XDG_RUNTIME_DIR`). On a server (§5) `HEYMORGAN_SOCKET` defaults to
+  `data/heymorgan.sock` in the checkout instead.
+- **The old path, deprecated:** with no `HEYMORGAN_SOCKET` set, the daemon also
+  listens on `$XDG_RUNTIME_DIR/heyclaude.sock`, with the same handler, for
+  clients written before the rename. A client tries `heymorgan.sock` and may
+  fall back to `heyclaude.sock` (a daemon older than 1.1 has only that one).
+  Dropping the old path will be protocol 2.0.
 - **Who may connect:** anyone who can open the socket. There is no
   authentication; the socket relies on `$XDG_RUNTIME_DIR` being private to the
   user (mode 0700). Whatever can reach it can do everything below, including
@@ -346,14 +358,14 @@ Anything that can send `admin` can run programs as the user.
 
 `env.mjs` settles which part a daemon plays before anything else runs:
 
-1. `HEYCLAUDE_ROLE` (`local`, `server` or `client`), if set — meant for trials;
+1. `HEYMORGAN_ROLE` (`local`, `server` or `client`), if set — meant for trials;
 2. otherwise `server` if `PORT` is set, which it is when the checkout has a
    `.env` (read by `env.mjs` itself, without overriding the real environment);
 3. otherwise `client` if `client.json` names a `server`;
 4. otherwise `local`.
 
-`client.json` is `$HEYCLAUDE_CLIENT_FILE`, by default
-`~/.config/heyclaude/client.json`:
+`client.json` is `$HEYMORGAN_CLIENT_FILE`, by default
+`~/.config/heymorgan/client.json`:
 
 ```json
 { "server": "home-server:8790", "key": "hc_…", "device": "laptop" }
@@ -362,8 +374,8 @@ Anything that can send `admin` can run programs as the user.
 `server` is `host:port` (taken as `ws://`), `ws://…`/`wss://…`, or
 `http://…`/`https://…` (turned into `ws://`/`wss://`, path kept, for a reverse
 proxy). `device` defaults to the hostname. `kind` may be given too (default
-`laptop`). It is written by `heyclaude connect`, `admin` `client.set`, and
-removed by `heyclaude disconnect`.
+`laptop`). It is written by `heymorgan connect`, `admin` `client.set`, and
+removed by `heymorgan disconnect`.
 
 **What a face sees does not change with the role.** It talks to the same local
 socket, with the same commands and events. The difference is who answers:
@@ -398,7 +410,7 @@ socket:
   while the client is itself speaking, and it is not set back to idle while the
   client is listening.
 - Settings are the server's: the client keeps a copy in
-  `~/.config/heyclaude/mirror.json` (`$HEYCLAUDE_MIRROR`), updated from the
+  `~/.config/heymorgan/mirror.json` (`$HEYMORGAN_MIRROR`), updated from the
   server, and restarts itself when a setting it cannot take up live changes.
   `config.json` on the client is left alone, for when it runs locally again.
 
@@ -415,10 +427,10 @@ answered by the client, from its own installed voices.
 can issue and revoke keys, including its own.
 
 **server** — the brain only: no microphone, speaker, screen or desktop. It keeps
-everything in the checkout's `data/` (`$HEYCLAUDE_DATA`): `config.json`,
+everything in the checkout's `data/` (`$HEYMORGAN_DATA`): `config.json`,
 `memory/`, the memory key in `memory.key` (there is no keyring),
-`access.json`, and its own command socket `heyclaude.sock`. It answers its local
-socket like a local daemon (for `heyclaude` run on the server), and its clients
+`access.json`, and its own command socket `heymorgan.sock`. It answers its local
+socket like a local daemon (for `heymorgan` run on the server), and its clients
 over the server link (§6). `toggle` does nothing there, `enroll` fails (there is no voice model), and
 `speak` is no use there (it would try to speak on the server itself). Its answers go out as `sentence` events for clients to speak.
 
@@ -435,7 +447,7 @@ prefix is the proxy's to strip (see `docs/server-and-satellites.md`).
 { "hello": { "key": "hc_…", "device": "kitchen-dot", "kind": "dot", "can": ["sight:camera", "files"] } }
 ```
 
-- `key` must be one the server issued (`heyclaude access add <device>`). The
+- `key` must be one the server issued (`heymorgan access add <device>`). The
   server keeps only its SHA-256 hash, in `data/access.json`. A bad key gets
   `{ "error": "That key is not one this server issued." }` and close code
   `4003`; no hello in 5 seconds, close code `4001`.

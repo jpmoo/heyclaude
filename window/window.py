@@ -30,10 +30,20 @@ from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RUNTIME = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
-SOCKET = os.environ.get("HEYCLAUDE_SOCKET", os.path.join(RUNTIME, "heyclaude.sock"))
+
+
+def setting(name, default=None):
+    """HEYMORGAN_<name>, or HEYCLAUDE_<name> as it was called before the rename."""
+    return os.environ.get(f"HEYMORGAN_{name}", os.environ.get(f"HEYCLAUDE_{name}", default))
+
+
+# A daemon from before the rename answers only on heyclaude.sock.
+SOCKET = setting("SOCKET") or next(
+    (path for path in (os.path.join(RUNTIME, name) for name in ("heymorgan.sock", "heyclaude.sock")) if os.path.exists(path)),
+    os.path.join(RUNTIME, "heymorgan.sock"))
 # The name a second launch finds the first by. A trial run, on a socket of its
 # own, is its own window and leaves the real one alone.
-ONE = "heyclaude-window-trial" if "HEYCLAUDE_SOCKET" in os.environ else "heyclaude-window"
+ONE = "heymorgan-window-trial" if setting("SOCKET") else "heymorgan-window"
 NOCTALIA = os.path.expanduser("~/.local/bin/noctalia")
 ICONS = os.path.expanduser("~/.local/share/noctalia/assets/fonts")  # the shell's own icon font
 
@@ -172,7 +182,7 @@ class Window(QMainWindow):
 def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("Morgan")
-    app.setDesktopFileName("dev.heyclaude.Morgan")
+    app.setDesktopFileName("io.github.jpmoo.heymorgan")
     app.setWindowIcon(QIcon(os.path.join(os.path.dirname(os.path.abspath(__file__)), "morgan.svg")))
     # One window. A second launch brings the first forward and goes away.
     first = QLocalSocket()
@@ -196,16 +206,16 @@ def main() -> int:
     window.show()
     # For checking the page without a person at it: a picture of the window
     # after a wait, and then away.
-    shot = os.environ.get("HEYCLAUDE_WINDOW_SHOT")
+    shot = setting("WINDOW_SHOT")
     if shot:
-        wait = int(os.environ.get("HEYCLAUDE_WINDOW_WAIT", "6000"))
+        wait = int(setting("WINDOW_WAIT", "6000"))
 
         def record() -> None:
             # Every fold opened first, if asked for, to see what is inside them.
             # Or some other script run first, such as clicking something open.
-            if os.environ.get("HEYCLAUDE_WINDOW_OPEN") or os.environ.get("HEYCLAUDE_WINDOW_RUN"):
-                window.view.page().runJavaScript(os.environ.get("HEYCLAUDE_WINDOW_RUN") or "document.querySelectorAll('details').forEach((box) => box.open = true)")
-                QTimer.singleShot(int(os.environ.get("HEYCLAUDE_WINDOW_SETTLE", "400")), lambda: (window.grab().save(shot), describe()))
+            if setting("WINDOW_OPEN") or setting("WINDOW_RUN"):
+                window.view.page().runJavaScript(setting("WINDOW_RUN") or "document.querySelectorAll('details').forEach((box) => box.open = true)")
+                QTimer.singleShot(int(setting("WINDOW_SETTLE", "400")), lambda: (window.grab().save(shot), describe()))
             else:
                 window.grab().save(shot)
                 describe()

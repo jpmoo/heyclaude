@@ -5,9 +5,9 @@ plugin_api = 32
 author = "jpmoo"
 license = "MIT"
 icon = "microphone"
-description = "A face for the heyclaude voice assistant: a waveform that pops up while Morgan listens, thinks and speaks."
+description = "A face for Morgan, the heymorgan voice assistant: a waveform that pops up while Morgan listens, thinks and speaks."
 tags = ["voice", "assistant"]
-dependencies = ["heyclaude"]
+dependencies = ["heymorgan"]
 
 [[setting]]
 key = "accent_source"

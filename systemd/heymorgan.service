@@ -1,15 +1,17 @@
 [Unit]
-Description=heyclaude voice assistant daemon
+Description=Morgan, voice assistant daemon (heymorgan)
 After=pipewire.service
 # It may be started before the login keyring is unlocked, and then cannot read
 # its own memory: keep trying rather than giving up after a few quick failures.
 StartLimitIntervalSec=0
 
 [Service]
-ExecStart=/usr/bin/node %h/Documents/Scripts/heyclaude/daemon.mjs
+ExecStart=/usr/bin/node %h/Documents/Scripts/heymorgan/daemon.mjs
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=default.target
+# Its name until 2026-10-23: `systemctl --user restart heyclaude` still reaches it.
+Alias=heyclaude.service

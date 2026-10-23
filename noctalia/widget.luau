@@ -1,7 +1,7 @@
 --!nonstrict
 -- Bar widget: shows what Morgan is doing. Click to start or stop listening.
 
-local heyclaude = noctalia.expandPath("~/.local/bin/heyclaude")
+local heymorgan = noctalia.expandPath("~/.local/bin/heymorgan")
 
 local GLYPH = {
   listening = "microphone",
@@ -23,7 +23,7 @@ local function render()
 end
 
 function onClick()
-  noctalia.runAsync({ heyclaude, "toggle" })
+  noctalia.runAsync({ heymorgan, "toggle" })
 end
 
 noctalia.state.watch("state", render)

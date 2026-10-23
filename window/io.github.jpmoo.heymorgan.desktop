@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Morgan
+Comment=The conversation with your assistant
+Exec=/home/jpmoo/Documents/Scripts/heymorgan/bin/heymorgan window
+Icon=io.github.jpmoo.heymorgan
+Terminal=false
+Categories=Utility;
+StartupWMClass=io.github.jpmoo.heymorgan

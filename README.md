@@ -1,4 +1,4 @@
-# heyclaude
+# heymorgan
 
 Morgan: a voice and chat assistant for a Linux desktop (Hyprland, Noctalia,
 PipeWire). A local model served by Ollama does the talking. When a question is
@@ -9,12 +9,12 @@ its own subscription login — and relays the answer.
 
 | | |
 |---|---|
-| `daemon.mjs` | The assistant: microphone, wake word, speech in and out, the model loop, memory, sight, MCP tools. Runs as `heyclaude.service`. |
-| `bin/heyclaude` | The command: `settings`, `chat`, `toggle`, `say`, `type`, `stop`, `new`, `interview`, `voice`, `login`, `status`, `watch`. |
-| `settings.mjs` | `heyclaude settings`: menus for everything in `~/.config/heyclaude/config.json`. |
+| `daemon.mjs` | The assistant: microphone, wake word, speech in and out, the model loop, memory, sight, MCP tools. Runs as `heymorgan.service`. |
+| `bin/heymorgan` | The command: `settings`, `chat`, `toggle`, `say`, `type`, `stop`, `new`, `interview`, `voice`, `login`, `status`, `watch`. |
+| `settings.mjs` | `heymorgan settings`: menus for everything in `~/.config/heymorgan/config.json`. |
 | `lib.mjs` | Paths, defaults, the Oracle's login, encryption. |
 | `history.mjs` | Every exchange, sealed, with embeddings for finding earlier ones. |
-| `admin.mjs` | What the settings window may ask of the daemon: `heyclaude admin {"op": ..., "args": ...}`. |
+| `admin.mjs` | What the settings window may ask of the daemon: `heymorgan admin {"op": ..., "args": ...}`. |
 | `reminders.mjs` | Timers and reminders: working out when they are due. |
 | `speaker.mjs` | Whose voice is speaking, from taught voiceprints. |
 | `mcp.mjs` | A small MCP client (stdio and HTTP with a header key; no OAuth). |
@@ -27,7 +27,7 @@ its own subscription login — and relays the answer.
 
 ## What it needs, beyond this repository
 
-Under `~/.local/share/heyclaude/`, none of it committed here:
+Under `~/.local/share/heymorgan/`, none of it committed here:
 
 - `whisper.cpp/` built from source, and `models/ggml-base.en.bin` (speech to text)
 - `piper/` and `voices/*.onnx` (the lighter voice)
@@ -44,21 +44,31 @@ libsecret.
 
 ```bash
 npm install
-ln -s "$PWD/bin/heyclaude" ~/.local/bin/heyclaude
+ln -s "$PWD/bin/heymorgan" ~/.local/bin/heymorgan
 ln -s "$PWD/noctalia" ~/.local/share/noctalia/plugins/morgan
-cp systemd/heyclaude.service ~/.config/systemd/user/
-systemctl --user enable --now heyclaude.service
+cp systemd/heymorgan.service ~/.config/systemd/user/
+systemctl --user enable --now heymorgan.service
+ln -s "$PWD/window/morgan.svg" ~/.local/share/icons/hicolor/scalable/apps/io.github.jpmoo.heymorgan.svg
+cp window/io.github.jpmoo.heymorgan.desktop ~/.local/share/applications/
 noctalia msg plugins enable jpmoo/morgan
-heyclaude settings
+heymorgan settings
 ```
 
-The unit file assumes the repository is at `~/Documents/Scripts/heyclaude`.
+The unit file and the desktop file assume the repository is at
+`~/Documents/Scripts/heymorgan`.
+
+Until 2026-10-23 all of this was called heyclaude. The old names still work for
+now, as `docs/rename.md` describes: `heyclaude` is a link to the command,
+`heyclaude.service` an alias of the unit, `heyclaude.sock` is answered beside
+`heymorgan.sock`, `HEYCLAUDE_*` variables are read, and the first start moves
+`~/.config/heyclaude` and `~/.local/share/heyclaude` to `heymorgan`, leaving
+links behind.
 
 ## Where things are kept
 
-- Settings: `~/.config/heyclaude/config.json` (not encrypted; holds any MCP access keys).
-- The Oracle's Claude login: `~/.config/heyclaude/anthropic` and `~/.config/heyclaude/claude`, apart from any other Claude login on the machine.
-- Memory topics, saved pictures and the transcript: `~/.local/share/heyclaude/memory` and `history`, encrypted with a key in the login keyring.
+- Settings: `~/.config/heymorgan/config.json` (not encrypted; holds any MCP access keys).
+- The Oracle's Claude login: `~/.config/heymorgan/anthropic` and `~/.config/heymorgan/claude`, apart from any other Claude login on the machine.
+- Memory topics, saved pictures and the transcript: `~/.local/share/heymorgan/memory` and `history`, encrypted with a key in the login keyring.
 
 ## License
 
