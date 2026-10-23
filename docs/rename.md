@@ -1,14 +1,43 @@
-# Renaming heyclaude to Morgan
+# Renaming heyclaude to heymorgan
 
-**A plan, not yet carried out.** Written 2026-10-23; nothing below has been
-done. It needs Jeff's go-ahead, and the GitHub repository is not to be renamed
-until then.
+**Mostly a plan, not yet carried out.** Written 2026-10-23.
 
-The assistant has been called Morgan for a while; the project, its command, its
-service, its files and its socket are still `heyclaude`. Talaris is about to
-depend on Morgan (its face is Talaris's; its brain stays here), and the names
-Talaris builds against should be the lasting ones. So the rename comes before
-Talaris writes code against the socket, or very soon after.
+**Decided by Jeff (2026-10-23):** the repository and its folder are called
+**heymorgan**. Those are being done separately, as step 7 describes: the GitHub
+repository `jpmoo/heyclaude` becomes `jpmoo/heymorgan`, and the laptop's
+checkout moves to `~/Documents/Scripts/heymorgan`, with the unit's paths, the
+command and plugin links and the desktop file repointed at the same time.
+
+**Not yet decided, and not to be done without Jeff's go-ahead:** everything
+else in this document — the command, the units, the socket, the folders Morgan
+keeps its settings and memory in, the environment variables.
+
+The assistant is called Morgan; the code has been `heyclaude` throughout.
+Talaris is about to depend on Morgan (its face is Talaris's; its brain stays
+here), and the names Talaris builds against should be the lasting ones. So the
+rest of the rename comes before Talaris writes code against the socket, or very
+soon after.
+
+## Which name: heymorgan, not morgan
+
+With the repository and folder called heymorgan, the proposal is that every name
+a machine reads (command, unit, socket, folders, environment, package) becomes
+**heymorgan** too, and **Morgan** stays the name people see (the assistant, the
+window's title, the plugin's label):
+
+- **One name for the project.** The repository, the folder, the command, the
+  unit, the socket and the folders all say the same thing; nothing has to be
+  remembered as "the repo is X but the service is Y".
+- **It is distinctive.** `morgan` is a common word and a common name: a
+  `MORGAN_DEBUG` or `~/.config/morgan` belonging to something else is
+  conceivable; `HEYMORGAN_*` and `~/.config/heymorgan` are not.
+- **It reads as the wake phrase,** "Hey Morgan", as heyclaude did.
+- **The change is mechanical:** `heyclaude` → `heymorgan`, `HEYCLAUDE_` →
+  `HEYMORGAN_`, so it is easy to do completely and to check (`grep -ri
+  heyclaude` should find only the deliberate fallbacks).
+
+The cost is a longer command to type. A `morgan` link to the command is cheap
+to add for typing, if Jeff wants one; nothing would depend on it.
 
 ## What has to keep working
 
@@ -29,30 +58,30 @@ Talaris writes code against the socket, or very soon after.
 
 | What | Now | After |
 |---|---|---|
-| GitHub repository | `jpmoo/heyclaude` | `jpmoo/morgan` (GitHub redirects the old URL) |
-| Laptop checkout | `~/Documents/Scripts/heyclaude` | `~/Documents/Scripts/morgan` |
-| Command | `bin/heyclaude` → `~/.local/bin/heyclaude` | `bin/morgan` → `~/.local/bin/morgan`; `heyclaude` kept as a link to it |
-| User unit (laptop) | `heyclaude.service` | `morgan.service`, with `Alias=heyclaude.service` |
-| System unit (server) | `systemd/heyclaude-server.service`, installed as `heyclaude.service` | `systemd/morgan-server.service`, installed as `morgan.service`, same alias |
-| Command socket | `$XDG_RUNTIME_DIR/heyclaude.sock` | `$XDG_RUNTIME_DIR/morgan.sock`; `heyclaude.sock` also answered for a while |
-| Kokoro helper socket | `heyclaude-tts.sock` | `morgan-tts.sock` (private; no transition needed) |
-| Server's own socket | `data/heyclaude.sock` | `data/morgan.sock` |
-| Settings and logins | `~/.config/heyclaude/` | `~/.config/morgan/` |
-| Models, memory, history | `~/.local/share/heyclaude/` | `~/.local/share/morgan/` |
-| Client file | `~/.config/heyclaude/client.json` | `~/.config/morgan/client.json` (same contents; the name `client.json` stays) |
-| Environment | `HEYCLAUDE_*` (below) | `MORGAN_*`, with `HEYCLAUDE_*` still read |
+| GitHub repository | `jpmoo/heyclaude` | `jpmoo/heymorgan` (**decided**; GitHub redirects the old URL) |
+| Laptop checkout | `~/Documents/Scripts/heyclaude` | `~/Documents/Scripts/heymorgan` (**decided**) |
+| Command | `bin/heyclaude` → `~/.local/bin/heyclaude` | `bin/heymorgan` → `~/.local/bin/heymorgan`; `heyclaude` kept as a link to it |
+| User unit (laptop) | `heyclaude.service` | `heymorgan.service`, with `Alias=heyclaude.service` |
+| System unit (server) | `systemd/heyclaude-server.service`, installed as `heyclaude.service` | `systemd/heymorgan-server.service`, installed as `heymorgan.service`, same alias |
+| Command socket | `$XDG_RUNTIME_DIR/heyclaude.sock` | `$XDG_RUNTIME_DIR/heymorgan.sock`; `heyclaude.sock` also answered for a while |
+| Kokoro helper socket | `heyclaude-tts.sock` | `heymorgan-tts.sock` (private; no transition needed) |
+| Server's own socket | `data/heyclaude.sock` | `data/heymorgan.sock` |
+| Settings and logins | `~/.config/heyclaude/` | `~/.config/heymorgan/` |
+| Models, memory, history | `~/.local/share/heyclaude/` | `~/.local/share/heymorgan/` |
+| Client file | `~/.config/heyclaude/client.json` | `~/.config/heymorgan/client.json` (same contents; the name `client.json` stays) |
+| Environment | `HEYCLAUDE_*` (below) | `HEYMORGAN_*`, with `HEYCLAUDE_*` still read |
 | Keyring entry | schema `dev.heyclaude.Key`, `service=heyclaude` | **unchanged**, or copied once: see step 4 |
-| App id (window) | `dev.heyclaude.Morgan` | `io.github.jpmoo.Morgan` (see Decisions) |
-| Noctalia plugin | `jpmoo/morgan`, depends on `heyclaude` | id unchanged; depends on `morgan`; calls `~/.local/bin/morgan` |
-| npm package name | `heyclaude` | `morgan` |
-| MCP client name | `heyclaude` 0.1 | `morgan` |
-| PipeWire nodes | `heyclaude.mic`, `heyclaude.ec.capture` | `morgan.mic`, `morgan.ec.capture` |
-| Temporary files | `heyclaude-*.wav`, `-look-`, `-keep-`, `-view-`, `-keywords-` | `morgan-*` |
-| Window's single-instance name | `heyclaude-window`, `heyclaude-window-trial` | `morgan-window`, `morgan-window-trial` |
-| Caddy route | `/heyclaude*` → 8790 | `/morgan*` added beside it; `/heyclaude*` kept |
+| App id (window) | `dev.heyclaude.Morgan` | `io.github.jpmoo.heymorgan` (see Decisions) |
+| Noctalia plugin | `jpmoo/morgan`, depends on `heyclaude` | id unchanged; depends on `heymorgan`; calls `~/.local/bin/heymorgan` |
+| npm package name | `heyclaude` | `heymorgan` |
+| MCP client name | `heyclaude` 0.1 | `heymorgan` |
+| PipeWire nodes | `heyclaude.mic`, `heyclaude.ec.capture` | `heymorgan.mic`, `heymorgan.ec.capture` (the description shown in sound settings can say "Morgan microphone") |
+| Temporary files | `heyclaude-*.wav`, `-look-`, `-keep-`, `-view-`, `-keywords-` | `heymorgan-*` |
+| Window's single-instance name | `heyclaude-window`, `heyclaude-window-trial` | `heymorgan-window`, `heymorgan-window-trial` |
+| Caddy route | `/heyclaude*` → 8790 | `/heymorgan*` added beside it; `/heyclaude*` kept |
 | Access keys | `hc_…` | **unchanged**: issued keys stay valid, and new ones keep the prefix |
 
-The environment variables, each read as `MORGAN_X ?? HEYCLAUDE_X`:
+The environment variables, each read as `HEYMORGAN_X ?? HEYCLAUDE_X`:
 `ROLE`, `CONFIG`, `CLIENT_FILE`, `MIRROR`, `DATA`, `MEMORY`, `KEY_FILE`,
 `SOCKET`, `DEBUG`, `TRIALRUN`, and the window's `WINDOW_OPEN`, `WINDOW_RUN`,
 `WINDOW_SETTLE`, `WINDOW_SHOT`, `WINDOW_WAIT`. `PORT` and `HOST` are not
@@ -61,52 +90,55 @@ prefixed and do not change.
 ## The steps
 
 Each step is one commit, and leaves both the laptop and the server working.
+Step 7 (the repository and folder) is independent of the others and is being
+done first.
 
 ### 1. Read both names (code only, nothing moves)
 
-- One helper in `env.mjs`, `setting("ROLE")`, that returns `MORGAN_ROLE` or else
-  `HEYCLAUDE_ROLE`; every `process.env.HEYCLAUDE_*` read goes through it.
+- One helper in `env.mjs`, `setting("ROLE")`, that returns `HEYMORGAN_ROLE` or
+  else `HEYCLAUDE_ROLE`; every `process.env.HEYCLAUDE_*` read goes through it.
   `window.py` and the test scripts get the same fallback.
 - One place for the paths: `CONFIG_HOME` and the data folder are defined once (in
   `lib.mjs`) and used everywhere. Today `daemon.mjs`, `speaker.mjs`, `wake.mjs`,
   `kokoro.mjs` and `settings.mjs` each build `~/.local/share/heyclaude` for
   themselves; they import it instead.
-- Paths resolve to `~/.config/morgan` if it exists, otherwise
+- Paths resolve to `~/.config/heymorgan` if it exists, otherwise
   `~/.config/heyclaude`; likewise for `~/.local/share`. Nothing is moved yet.
 
 After this commit, nothing has changed on disk and both names are honored.
 
 ### 2. Answer on both sockets
 
-The daemon listens on `morgan.sock` and also on `heyclaude.sock` (two listeners,
-one handler; both deleted on shutdown). Clients — `bin/`, `window.py`, the
-Noctalia plugin — try `morgan.sock` first and fall back to `heyclaude.sock`.
-`docs/protocol.md` goes to **1.1**: the new path is added, the old one is
-documented as deprecated. Talaris is told to use `morgan.sock` from the start.
+The daemon listens on `heymorgan.sock` and also on `heyclaude.sock` (two
+listeners, one handler; both deleted on shutdown). Clients — `bin/`,
+`window.py`, the Noctalia plugin — try `heymorgan.sock` first and fall back to
+`heyclaude.sock`. `docs/protocol.md` goes to **1.1**: the new path is added, the
+old one is documented as deprecated. Talaris is told to use `heymorgan.sock`
+from the start.
 
 Dropping `heyclaude.sock` later is a breaking change, and makes the protocol
 **2.0**.
 
 ### 3. The command and the units
 
-- `bin/morgan` is the command; `bin/heyclaude` becomes a link to it, so
+- `bin/heymorgan` is the command; `bin/heyclaude` becomes a link to it, so
   `~/.local/bin/heyclaude` keeps working, and with it the Escape binding the
   daemon sets in Hyprland and any script Jeff has.
 - The Escape binding, the hotkey, and the plugin's calls switch to
-  `~/.local/bin/morgan`. Install adds that link.
-- `systemd/morgan.service` replaces `heyclaude.service` (its `ExecStart` still
-  pointing at the checkout where it is; step 7 moves that), with
+  `~/.local/bin/heymorgan`. Install adds that link.
+- `systemd/heymorgan.service` replaces `heyclaude.service`, with
   `[Install] Alias=heyclaude.service`, so `systemctl --user restart heyclaude`
   (and the code that still says it, on an older checkout) reaches the same
-  unit. The code that restarts the daemon (`lib.mjs`'s `restartDaemon`,
-  `daemon.mjs`'s `restartSoon`, `restart.sh`) says `morgan.service`, and
-  `restart.sh` looks for either name.
-- `systemd/morgan-server.service` replaces `heyclaude-server.service`, likewise
-  aliased; its `ReadWritePaths` lists both the old and the new folders until
-  step 5 is done on the server.
+  unit. Its `ExecStart` names `%h/Documents/Scripts/heymorgan`. The code that
+  restarts the daemon (`lib.mjs`'s `restartDaemon`, `daemon.mjs`'s
+  `restartSoon`, `restart.sh`) says `heymorgan.service`, and `restart.sh` looks
+  for either name.
+- `systemd/heymorgan-server.service` replaces `heyclaude-server.service`,
+  likewise aliased; its `ReadWritePaths` lists both the old and the new folders
+  until step 5 is done on the server.
 
-**Switching the laptop's unit over** (done once, by hand, from the new
-checkout; the daemon is down for a few seconds):
+**Switching the laptop's unit over** (done once, by hand, from the checkout; the
+daemon is down for a few seconds):
 
 ```bash
 systemctl --user disable --now heyclaude.service
@@ -117,11 +149,11 @@ rm ~/.config/systemd/user/heyclaude.service
 ```
 
 ```bash
-cp systemd/morgan.service ~/.config/systemd/user/ && systemctl --user daemon-reload
+cp systemd/heymorgan.service ~/.config/systemd/user/ && systemctl --user daemon-reload
 ```
 
 ```bash
-systemctl --user enable --now morgan.service
+systemctl --user enable --now heymorgan.service
 ```
 
 The old unit file has to go before enabling: the alias is made as a link named
@@ -150,8 +182,8 @@ The server's key is a file, `data/memory.key`, and does not move.
 On start, before anything else reads them, `env.mjs` moves each old folder to
 its new place if the new one does not exist yet:
 
-- `~/.config/heyclaude` → `~/.config/morgan`
-- `~/.local/share/heyclaude` → `~/.local/share/morgan`
+- `~/.config/heyclaude` → `~/.config/heymorgan`
+- `~/.local/share/heyclaude` → `~/.local/share/heymorgan`
 
 Each is a single `rename()` (same filesystem, so it is instant and all or
 nothing; the speech models are several GB and must not be copied). Then a link
@@ -160,11 +192,10 @@ scripts, or anything else that still says `heyclaude` keeps finding everything.
 If both exist (a half-done move, or a fresh install beside an old one), nothing
 is moved and the new one is used, with a line in the log saying so.
 
-`client.json` and `mirror.json` move with their folder. Their contents name the
-server and the key, not any path, so nothing in them changes. The Oracle's
-Claude login (`claude/`) moves with it too; `morgan account` afterwards should
-still name the personal account, and if it does not, `morgan login` puts it
-back.
+`client.json` and `mirror.json` move with their folder. Neither holds a path
+into Morgan's own folders, so nothing in them changes. The Oracle's Claude login
+(`claude/`) moves with it too; `heymorgan account` afterwards should still name
+the personal account, and if it does not, `heymorgan login` puts it back.
 
 On the server, `data/` is inside the checkout and is not touched. Its
 `~/.config/heyclaude` and `~/.local/share/heyclaude`, if any, move as above.
@@ -174,44 +205,49 @@ used them for a while.
 
 ### 6. The window, the plugin, the docs
 
-- The window's app id becomes `io.github.jpmoo.Morgan`: the desktop file and the
-  icon are renamed, `window.py` sets the new id, and install puts them in place.
-  The old `dev.heyclaude.Morgan.desktop` and its icon are deleted from
+- The window's app id becomes `io.github.jpmoo.heymorgan`: the desktop file and
+  the icon are renamed, `window.py` sets the new id, and install puts them in
+  place. The old `dev.heyclaude.Morgan.desktop` and its icon are deleted from
   `~/.local/share/applications` and `~/.local/share/icons` by hand (or by
   install), or the launcher shows Morgan twice. Any Hyprland window rule that
-  matches the old class has to be changed at the same time.
-- The Noctalia plugin keeps its id `jpmoo/morgan` (already the right name, and
-  changing it would make it a different plugin to Noctalia). Its `dependencies`, description and command path change.
-  Once Talaris is Morgan's face the plugin may simply be retired.
+  matches the old class has to be changed at the same time. The desktop file's
+  `Name=` stays Morgan.
+- The Noctalia plugin keeps its id `jpmoo/morgan` (changing it would make it a
+  different plugin to Noctalia). Its `dependencies`, description and command
+  path change. Once Talaris is Morgan's face the plugin may simply be retired.
 - `README.md`, `docs/*`, `tests/*`, `restart.sh`, comments and messages say
-  `morgan`. `docs/deploy.md` gets the server's steps (below).
+  `heymorgan`. `docs/deploy.md` gets the server's steps (below).
 
-### 7. The repository
+### 7. The repository and the folder (decided; done separately)
 
-Only after Jeff's go-ahead:
-
-- Rename `jpmoo/heyclaude` to `jpmoo/morgan` on GitHub. GitHub redirects the old
-  URL for clones, fetches and the web, but `git remote set-url` on each checkout
-  is still tidier.
-- On the laptop, move the checkout to `~/Documents/Scripts/morgan` and leave a
-  link at the old path, because the user unit's `ExecStart`,
-  `~/.local/bin/heyclaude`, the plugin's link, the desktop file's `Exec=`, and
-  Talaris's notes all point there. Then repoint
-  each one and remove the link.
-- On the server, the checkout can stay at `~/heyclaude` (only the unit names it)
-  or be moved the same way, with the unit's paths changed in the same step.
+- **The GitHub repository** `jpmoo/heyclaude` → `jpmoo/heymorgan`. GitHub
+  redirects the old URL for clones, fetches, pushes and the web; each checkout's
+  `origin` is pointed at the new URL all the same (`git remote set-url origin
+  https://github.com/jpmoo/heymorgan.git`), the server's included.
+- **The laptop's checkout** `~/Documents/Scripts/heyclaude` →
+  `~/Documents/Scripts/heymorgan`. These point into it and are repointed in the
+  same move: `heyclaude.service`'s `ExecStart` (then `daemon-reload` and a
+  restart), the `~/.local/bin/heyclaude` link, the
+  `~/.local/share/noctalia/plugins/morgan` link, and
+  `dev.heyclaude.Morgan.desktop`'s `Exec=` (both the repository's copy in
+  `window/` and the installed one). Also: the path in the README's "The unit
+  file assumes…" line, `docs/deploy.md` (`git clone …/heyclaude.git`), and
+  Talaris's `DESIGN.md`, which names the repository and the socket.
+- **The server's checkout** can stay at `~/heyclaude` (only its unit names it)
+  or be moved the same way, with the unit's paths and `ReadWritePaths` changed
+  in the same step.
 
 ## The order, for Jeff's two machines
 
-1. Merge steps 1–6 (one release). Nothing moves until the daemon restarts.
-2. **Server first**: pull, `restart.sh`, switch the system unit (step 3), add
-   the `/morgan*` route in Caddy beside `/heyclaude*`. Clients keep working
+1. Repository and folder (step 7): being done now.
+2. Merge steps 1–6 (one release). Nothing moves until the daemon restarts.
+3. **Server first**: pull, `restart.sh`, switch the system unit (step 3), add
+   the `/heymorgan*` route in Caddy beside `/heyclaude*`. Clients keep working
    throughout: the link, the port and the keys are unchanged.
-3. **Laptop**: `heyclaude key export` (kept somewhere safe), pull, switch the
+4. **Laptop**: `heyclaude key export` (kept somewhere safe), pull, switch the
    user unit (step 3). The first start moves the folders. Check
-   `morgan status` names the server, `morgan log` shows no errors, and memory
-   answers a question it should know.
-4. Repository rename and checkout move (step 7), when convenient.
+   `heymorgan status` names the server, `heymorgan log` shows no errors, and
+   memory answers a question it should know.
 5. A later release drops `heyclaude.sock` (protocol 2.0), the `HEYCLAUDE_*`
    fallbacks, the `heyclaude` command link and the old-path links.
 
@@ -225,12 +261,13 @@ each folder back.
 
 ## Decisions for Jeff
 
-- **The app id.** `io.github.jpmoo.Morgan` follows the convention for projects
-  hosted on GitHub with no domain of their own. If there is a domain Talaris and
-  Morgan will share, that is better, and should match whatever Talaris uses.
-- **The environment prefix.** `MORGAN_` is short and plain; it is also a common
-  word, so a clash is possible, if unlikely. `MORGAN_ASSISTANT_` is the safer and
-  uglier alternative.
+- **heymorgan or morgan** for the command, unit, socket, folders and
+  environment. Proposed: heymorgan, for the reasons above; optionally a
+  `morgan` link to the command for typing.
+- **The app id.** `io.github.jpmoo.heymorgan` follows the convention for
+  projects hosted on GitHub with no domain of their own, and matches the
+  repository. If there is a domain Talaris and Morgan will share, that is better,
+  and should match whatever Talaris uses.
 - **When the old names stop working.** Proposed: one release after both
   machines and Talaris have moved, with the protocol going to 2.0 then.
 - **The keyring entry.** Proposed: never renamed (step 4).
