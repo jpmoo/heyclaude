@@ -2062,5 +2062,89 @@
    "look": false,
    "files": true
   }
+ },
+ {
+  "say": "What time is it?",
+  "want": {
+   "source": "self",
+   "lookup": false,
+   "sum": false,
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false,
+   "earlier": false
+  }
+ },
+ {
+  "say": "What's the time?",
+  "want": {
+   "source": "self",
+   "lookup": false,
+   "sum": false,
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false,
+   "earlier": false
+  }
+ },
+ {
+  "say": "What's today's date?",
+  "want": {
+   "source": "self",
+   "lookup": false,
+   "sum": false,
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false,
+   "earlier": false
+  }
+ },
+ {
+  "say": "What day is it today?",
+  "want": {
+   "source": "self",
+   "lookup": false,
+   "sum": false,
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false,
+   "earlier": false
+  }
+ },
+ {
+  "say": "Is it Friday?",
+  "want": {
+   "source": "self",
+   "lookup": false,
+   "sum": false,
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false,
+   "earlier": false
+  }
+ },
+ {
+  "say": "What's the date tomorrow?",
+  "want": {
+   "source": "self",
+   "lookup": false,
+   "sum": false,
+   "oracle": false,
+   "change": false,
+   "reminder": false,
+   "keep": false,
+   "look": false,
+   "earlier": false
+  }
  }
 ]

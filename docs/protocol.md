@@ -1,10 +1,13 @@
 # Morgan's client protocol
 
-**Version 1.1**, written 2026-10-23 from the code as it stands (`daemon.mjs`,
+**Version 1.2**, written 2026-10-23 from the code as it stands (`daemon.mjs`,
 `admin.mjs`, `env.mjs`, `access.mjs`). It describes what the daemon does, not
 what it was meant to do; where the two differ, or where the behavior would
 surprise someone building on it, a **Note** says so.
 
+- **1.2** (2026-10-23): the `timeZone` setting (`config.get` and `config.set`),
+  taking effect at once. Every time Morgan says or records — `when`,
+  `askedWhen`, the time the model is told, "today" — is in that zone.
 - **1.1** (2026-10-23): Morgan's code was renamed from heyclaude to heymorgan
   (`docs/rename.md`). The socket is `heymorgan.sock`, and `heyclaude.sock` is
   still answered, as the same socket; the environment variables are
@@ -267,7 +270,7 @@ and malformed JSON `{ ok: false, error: "admin wants JSON: { op, args }" }`.
 
 | Op | Args | Reply fields |
 |---|---|---|
-| `config.get` | — | `name, userName, style, ollama: { url, model }, embedModel, oracleModel, wakeWord, interruptWord, followUpSeconds, endSilenceMs, hotkey, sight, folders, knownVoicesOnly, voiceThreshold, similarFloor` |
+| `config.get` | — | `name, userName, style, ollama: { url, model }, embedModel, oracleModel, wakeWord, interruptWord, followUpSeconds, endSilenceMs, hotkey, sight, folders, knownVoicesOnly, voiceThreshold, similarFloor, timeZone` |
 | `config.set` | `values`: `{ "path.to.key": value }` | `restart`: whether the daemon will restart to take the change up |
 
 `config.set` writes `config.json`. A key path may be dotted (`"ollama.url"`). A
@@ -275,10 +278,15 @@ value of `null` puts a setting back to its default, except for `wakeWord`,
 `interruptWord`, `hotkey` and `userName`, where `null` (or `""`) switches it off.
 Settings Morgan reads each time it uses them (`similarFloor`, `knownVoicesOnly`,
 `voiceThreshold`, `userName`, `folders`, `sight`, `pronunciations`, `style`,
-`followUpSeconds`, `endSilenceMs`, `recallScore`, `consultLine`, `wakeReply`)
-take effect at once. **Any other key restarts the daemon** about 400 ms after
+`followUpSeconds`, `endSilenceMs`, `recallScore`, `consultLine`, `wakeReply`,
+`timeZone`) take effect at once. **Any other key restarts the daemon** about 400 ms after
 the reply (the watch connection drops and the socket goes away for a moment).
 `config.set` does not check keys or values: anything is written.
+
+`timeZone` is an IANA name (`"America/New_York"`); `null` is the zone of the
+machine the daemon runs on, and `config.get` then reports that zone. A name
+that is not a time zone is written but not used: the daemon keeps the zone it
+had. On a client the server's setting is the one that counts.
 
 ### Where Morgan lives
 

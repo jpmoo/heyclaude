@@ -32,6 +32,8 @@ export function createAdmin(d) {
       wakeWord: d.cfg.wakeWord, interruptWord: d.interruptWord(), followUpSeconds: d.cfg.followUpSeconds,
       endSilenceMs: d.cfg.endSilenceMs, hotkey: d.cfg.hotkey, sight: d.cfg.sight, folders: d.cfg.folders,
       knownVoicesOnly: d.cfg.knownVoicesOnly, voiceThreshold: d.cfg.voiceThreshold, similarFloor: d.cfg.similarFloor,
+      // The zone in use: the one chosen, or this machine's own when none is.
+      timeZone: d.cfg.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
     }),
 
     // values: { "ollama.url": "...", followUpSeconds: 4 }. null goes back to the default.

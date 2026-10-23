@@ -179,6 +179,11 @@ const defaults = {
   // The list of conversations most like the one being looked at stops at this likeness.
   similarFloor: 0.7,
   threadScore: 0.55,
+  // The user's time zone, as an IANA name ("America/New_York"); null is this
+  // machine's own. A home server is often kept on UTC, and then everything
+  // Morgan said about the time — "It is …" in what the model reads, the
+  // record's times, "today" — was hours off for the person asking.
+  timeZone: null,
 };
 
 const configPath = process.env.HEYMORGAN_CONFIG ?? join(CONFIG_HOME, "config.json");
@@ -192,6 +197,25 @@ const cfg = {
 // Unless one has been chosen, the wake phrase goes with the name.
 if (!("wakeWord" in user)) cfg.wakeWord = `Hey ${cfg.name}`;
 
+// The time zone is the process's: every Date method that reads local time
+// follows TZ, which Node takes up again when it is set, so one setting puts
+// all of them right. A name Intl does not know is ignored, not obeyed.
+function applyTimeZone(zone) {
+  if (!zone) return;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: zone });
+    process.env.TZ = zone;
+  } catch {
+    console.error(`timeZone: ${zone} is not a time zone; keeping ${Intl.DateTimeFormat().resolvedOptions().timeZone}`);
+  }
+}
+applyTimeZone(cfg.timeZone);
+
+// Today, as YYYY-MM-DD, in the user's time zone. toISOString() gives the day
+// in UTC, which turns over at 8 PM in New York.
+const localDay = (at = new Date()) =>
+  `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, "0")}-${String(at.getDate()).padStart(2, "0")}`;
+
 // What this copy does, by its part (see env.mjs). A server has no microphone,
 // speaker, screen or folders of its own: its answers go to the clients as
 // sentences to speak, and looking and reading files wait for clients that can.
@@ -202,11 +226,13 @@ const BRAIN = ROLE !== "client";
 // Settings that are looked at each time they are used take effect as soon as
 // the file is saved, without waiting for the settings menu to be closed and
 // the daemon restarted. (Voices, servers and the microphone still need that.)
-const LIVE = ["similarFloor", "knownVoicesOnly", "voiceThreshold", "userName", "folders", "sight", "pronunciations", "style", "followUpSeconds", "endSilenceMs", "recallScore", "consultLine", "wakeReply"];
+const LIVE = ["similarFloor", "knownVoicesOnly", "voiceThreshold", "userName", "folders", "sight", "pronunciations", "style", "followUpSeconds", "endSilenceMs", "recallScore", "consultLine", "wakeReply", "timeZone"];
 watchFile(configPath, { interval: 1000 }, () => {
   try {
     const saved = JSON.parse(readFileSync(configPath, "utf8"));
     for (const key of LIVE) cfg[key] = key in saved ? saved[key] : defaults[key];
+    if (cfg.timeZone) applyTimeZone(cfg.timeZone);
+    else delete process.env.TZ;
     if (ROLE === "server") tellClients({ config: forClients(saved) });
     if (ROLE === "client" && homeLink?.readyState === 1) homeLink.send(JSON.stringify({ can: abilities() }));
   } catch { /* half-written, or gone: keep what we have */ }
@@ -1154,7 +1180,7 @@ async function rememberFacts(text) {
     const topic = readTopic(entry.topic);
     const at = topic?.notes.indexOf(entry.note) ?? -1;
     if (at < 0) continue;
-    topic.notes[at] = `${rewritten} (${new Date().toISOString().slice(0, 10)})`;
+    topic.notes[at] = `${rewritten} (${localDay()})`;
     writeTopic(topic);
     corrected.push({ topic: topic.name, was: bareNote(entry.note), now: rewritten });
     emit({ type: "memory", topic: topic.name, note: rewritten, corrected: true });
@@ -1173,7 +1199,7 @@ async function rememberFacts(text) {
     const topic = readTopic(closest.entry.topic);
     const at = topic?.notes.indexOf(closest.entry.note) ?? -1;
     if (at < 0) continue;
-    topic.notes[at] = `${merged} (${new Date().toISOString().slice(0, 10)})`;
+    topic.notes[at] = `${merged} (${localDay()})`;
     writeTopic(topic);
     corrected.push({ topic: topic.name, was: bareNote(closest.entry.note), now: merged });
     emit({ type: "memory", topic: topic.name, note: merged, corrected: true });
@@ -1237,7 +1263,7 @@ async function learnFrom(content, source) {
     found.push(...(JSON.parse((await response.json()).message.content).notes ?? []));
   }
   const filed = {};
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDay();
   const plain = (note) => words(note.replace(/\(\d{4}-\d{2}-\d{2}\)\s*$/, "")).join(" ");
   for (const name of names) {
     const topic = readTopic(name);
@@ -1648,7 +1674,7 @@ async function memoryTool(name, args, sources = null) {
     }
     const plainNote = (text) => words(String(text).replace(/\(\d{4}-\d{2}-\d{2}\)\s*$/, "")).join(" ");
     if (existing?.notes.some((held) => plainNote(held) === plainNote(note))) return "Already saved, word for word; nothing added.";
-    const today = new Date().toISOString().slice(0, 10);
+    const today = localDay();
     writeTopic({
       name: existing?.name ?? topic,
       description: existing?.description || args.description || "",
@@ -1753,7 +1779,7 @@ async function tend({ force = false } = {}) {
   const garden = gardenState();
   if (!force && Date.now() - (garden.last ?? 0) < DAY) return null;
   const who = cfg.userName ?? "the user";
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDay();
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const backup = join(GARDEN_BACKUPS, stamp);
   mkdirSync(backup, { recursive: true });
@@ -1984,7 +2010,7 @@ const CHANGE_SPOKEN_OF = /\b(i['’]?m|i am|i['’]ll|i will|i['’]m about to|i
 const PERMISSION_ASKED = /\b(shall i|should i|want me to|would you like me to|do you want me to|like me to|is that (ok|okay|right|correct)|does that (work|sound)|sound (good|right)|go ahead|proceed|confirm)\b[^.!]*\?/i;
 const PUTS_OFF = /\b(i(['’]d| would| will|['’]ll)? (need|have) to (check|look|search|recall|consult|review|pull|go through|see|clarify|verify|confirm|find out|ask)|let me (ask|consult|clarify|verify|confirm|find out|get|grab)|i(['’]ll| will) (ask|consult|find out)|i(['’]d| would) (need|have|want) to (first )?(check|look|search|recall|review)|let me (check|look|search|recall|pull|see|review|go through)|i(['’]ll| will| can| could) (check|look (that|it|this|in|at|through|up)|search|recall|pull)|i don['’]t have (that|this|it|any|access)[^.]*\b(memory|notes|record|information)|would you like me to (check|look|search|recall))\b/i;
 const ORACLE_SAYS = "The Oracle says: ";
-const ORACLE_RELAY = "The Oracle answered as follows. Give the user this answer now. Speak to them directly, as you: never of them by name or as he, she or they, even where the Oracle's wording does. Say once, in passing, that it comes from the Oracle, and then give the substance. Do not say what you did or are about to do, do not restate their question, and do not offer alternatives they did not ask about.";
+const ORACLE_RELAY = "The Oracle answered as follows. Give the user this answer now. Speak to them directly, as you: never of them by name or as he, she or they, even where the Oracle's wording does. Say once, in passing, that it comes from the Oracle, and then give the substance. Do not say what you did or are about to do, do not restate their question, and do not offer alternatives they did not ask about. If the Oracle says it does not know or cannot tell, say that it could not tell, and stop: never put an answer of your own in its place, and never give anything as the Oracle's that it did not say.";
 const YES = /^(yes|yeah|yep|yup|sure|ok|okay|alright|all right|right|correct|absolutely|definitely|please)?( ?(yes|please|do it|do that|go ahead|go for it|go on|confirm|confirmed|thats right|that is right|thats correct|sounds good|thats fine|fine))*( ?(please|thanks|thank you))?$/;
 
 // Called with the user's words at the start of each turn. Returns what the
