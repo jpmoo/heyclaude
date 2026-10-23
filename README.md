@@ -58,3 +58,9 @@ The unit file assumes the repository is at `~/Documents/Scripts/heyclaude`.
 - Settings: `~/.config/heyclaude/config.json` (not encrypted; holds any MCP access keys).
 - The Oracle's Claude login: `~/.config/heyclaude/anthropic` and `~/.config/heyclaude/claude`, apart from any other Claude login on the machine.
 - Memory topics, saved pictures and the transcript: `~/.local/share/heyclaude/memory` and `history`, encrypted with a key in the login keyring.
+
+## License
+
+GPL-3.0-only — see [LICENSE](LICENSE). Also available on other terms from the
+owner, as Talaris is. Contributions need the [Contributor License
+Agreement](CLA.md); see [CONTRIBUTING.md](CONTRIBUTING.md).
