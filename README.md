@@ -23,6 +23,7 @@ its own subscription login — and relays the answer.
 | `keyring.py` | Fetches the data key from the login keyring. |
 | `noctalia/` | The Noctalia plugin: voice popup, chat window, settings window, bar icon. |
 | `systemd/` | The user unit. |
+| `docs/protocol.md` | What a face or satellite may say to the daemon, and what it hears back: the versioned client protocol. |
 
 ## What it needs, beyond this repository
 

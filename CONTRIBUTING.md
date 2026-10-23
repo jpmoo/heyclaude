@@ -35,3 +35,10 @@ is markdown-it's, under the MIT license.
 **"Only," not "or later."** "Or later" would let a future version of the GPL,
 written by someone else, apply to Morgan without the owner choosing it.
 
+
+## The client protocol
+
+Talaris and the satellites talk to Morgan through the protocol written down in
+[docs/protocol.md](docs/protocol.md). A change to what the daemon accepts or
+sends updates that document in the same commit, and a breaking change raises
+its major version.
