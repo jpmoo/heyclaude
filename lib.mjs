@@ -5,7 +5,7 @@ import { ROLE, TRIAL } from "./env.mjs"; // first: it settles where things are k
 import { spawnSync } from "node:child_process";
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -131,7 +131,17 @@ export function dataKey() {
     return key;
   }
   const script = join(dirname(fileURLToPath(import.meta.url)), "keyring.py");
-  const result = spawnSync("python3", [script], { encoding: "utf8" });
+  // A new key is made only for a memory that has nothing sealed in it yet. With
+  // sealed memory already there, a missing key means the keyring lost it, and a
+  // new one would lock that memory away for good (as happened at a boot).
+  const sealed = [MEMORY, join(SPEECH, "history")].some((dir) => existsSync(dir)
+    && readdirSync(dir, { recursive: true }).some((name) => /\.(sealed|topic|picture|document|voice)$/.test(String(name))));
+  const result = spawnSync("python3", [script, ...(sealed ? ["--no-create"] : [])], { encoding: "utf8" });
+  // A keyring that is locked or not yet up says so; one that answers with nothing has lost the key.
+  if (result.status !== 0 && sealed && !result.stderr.trim()) {
+    throw new Error("the login keyring has no memory key, but there is memory sealed with one: put that key back with "
+      + "`heyclaude key import` (`heyclaude key export` on the server shows it)");
+  }
   if (result.status !== 0) throw new Error(`the login keyring did not give up the data key: ${result.stderr.trim().split("\n").pop()}`);
   key = Buffer.from(result.stdout.trim(), "base64");
   if (key.length !== 32) throw new Error("the data key in the login keyring is not the right size");

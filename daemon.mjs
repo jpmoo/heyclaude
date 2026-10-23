@@ -2175,7 +2175,11 @@ async function mcpTool(name, args) {
 
 const transcript = new Transcript({
   // A trial run, with its own memory folder, keeps its own transcript too.
-  dir: process.env.HEYCLAUDE_MEMORY ? join(MEMORY, "history") : join(SPEECH, "history"),
+  // A client keeps no transcript (the server does), and never opens the one left
+  // from when it ran Morgan itself: with the keyring's key changed, reading it
+  // had the laptop crash at every start.
+  dir: ROLE === "client" ? join(RUNTIME, "heyclaude-client-has-no-transcript")
+    : process.env.HEYCLAUDE_MEMORY ? join(MEMORY, "history") : join(SPEECH, "history"),
   url: cfg.ollama.url,
   model: cfg.embedModel,
 });
