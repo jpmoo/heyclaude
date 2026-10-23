@@ -82,12 +82,34 @@ if (args[0] === "attach") {
   process.exit(files.length ? 0 : 1);
 }
 
+// A pasted memory key, cleaned of what a paste brings with it (the terminal's
+// pasted-text markers, spaces, a line break, quotes), or a plain refusal that
+// says what it was instead.
+function memoryKey(pasted) {
+  const text = String(pasted).replace(/\x1b\[20[01]~/g, "").replace(/[\s"'`]/g, "");
+  const fail = (why) => { console.error(`heyclaude: ${why}`); process.exit(1); };
+  if (!text) fail("nothing was pasted");
+  if (text.startsWith("hc_")) fail("that is a device's access key (from `access add`), not the memory key: on the server run `./bin/heyclaude key export` and paste what it prints");
+  for (const form of ["base64", "base64url"]) {
+    const bytes = Buffer.from(text, form);
+    if (bytes.length === 32 && bytes.toString(form).replace(/=+$/, "") === text.replace(/=+$/, "")) return bytes.toString("base64");
+  }
+  fail(`that is not a memory key: it should be 44 characters ending in "=", and this is ${text.length} characters (perhaps only part of it was copied)`);
+}
+
 // One line from the terminal, done when Enter is pressed (reading to the end of
-// input waited for Ctrl+D, and a pasted key seemed to go nowhere).
+// input waited for Ctrl+D, and a pasted key seemed to go nowhere). Blank lines
+// before it are skipped: a key copied from a terminal often brings the line
+// break before it, and that empty line was taken for the whole answer.
 function firstLine() {
   return new Promise((resolve) => {
     const input = createInterface({ input: process.stdin });
-    input.once("line", (line) => { input.close(); resolve(line); });
+    input.on("line", (line) => {
+      if (!line.replace(/\x1b\[20[01]~/g, "").trim()) return;
+      // Answered before closing: closing first set off the "nothing came" answer, and every paste read as empty.
+      resolve(line);
+      input.close();
+    });
     input.once("close", () => resolve(""));
   });
 }
@@ -103,8 +125,7 @@ if (args[0] === "key") {
     console.log(readFileSync(file, "utf8").trim());
   } else if (file && args[1] === "import") {
     console.error(`Paste the key and press Enter. It is kept in ${file}, readable only by this account.`);
-    const line = (await firstLine()).trim();
-    if (Buffer.from(line, "base64").length !== 32) { console.error("heyclaude: that is not a memory key"); process.exit(1); }
+    const line = memoryKey(await firstLine());
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, line + "\n", { mode: 0o600 });
     console.error("The key is in place. Restart the service to take it up.");
@@ -115,7 +136,7 @@ if (args[0] === "key") {
     console.log(result.stdout.trim());
   } else if (args[1] === "import") {
     console.error("Paste the key and press Enter. It replaces any key in the login keyring, and what was sealed with that one can no longer be read.");
-    const line = await firstLine();
+    const line = memoryKey(await firstLine());
     const result = spawnSync("python3", [script, "--set"], { input: line + "\n", encoding: "utf8" });
     if (result.status !== 0) { console.error(`heyclaude: ${result.stderr.trim().split("\n").pop()}`); process.exit(1); }
     restartDaemon();
