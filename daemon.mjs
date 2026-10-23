@@ -2569,9 +2569,20 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
   // What kind of turn this is, decided once and acted on below. A bare yes is
   // not sorted: it answers whatever was last proposed.
   const lapsed = history.length ? [] : lastConversation();
-  const sorted = (YES.test(words(text).join(" ")) ? null
-    : await sortTurn({ ...cfg.ollama, name: cfg.name }, text, history.length ? history : lapsed.flatMap((item) => [{ role: "user", content: item.user }, { role: "assistant", content: item.morgan }])))
-    ?? { follows: false, about: null, lookup: false, sum: false, oracle: false, change: false, reminder: false, keep: false, look: false, earlier: false, files: false };
+  // Sorted, and sorted again once if the AI server fails (a GPU fault on it
+  // once left a turn unsorted, the change guard off, and a task claimed made
+  // that never was). Still unsorted, the turn is taken as one that may change
+  // something, so that nothing can be said to be done that was not.
+  const bare = YES.test(words(text).join(" "));
+  const earlierTalk = history.length ? history : lapsed.flatMap((item) => [{ role: "user", content: item.user }, { role: "assistant", content: item.morgan }]);
+  let sorted = bare ? null : await sortTurn({ ...cfg.ollama, name: cfg.name }, text, earlierTalk);
+  if (!bare && !sorted && mine === turn) {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    sorted = await sortTurn({ ...cfg.ollama, name: cfg.name }, text, earlierTalk);
+  }
+  const unsorted = !bare && !sorted;
+  if (unsorted) console.error("sort: the turn could not be sorted; it is treated as one that may change something");
+  sorted ??= { follows: false, about: null, lookup: false, sum: false, oracle: false, change: unsorted, reminder: false, keep: false, look: false, earlier: false, files: false };
   if (mine !== turn) return;
   emit({ type: "kind", kind: sorted.about, ...Object.fromEntries(Object.entries(sorted).filter(([key, value]) => key !== "about" && value)) });
   // "Try again", said after the conversation has lapsed, means the last thing
@@ -2844,7 +2855,10 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
           + " cannot be right. Call the tool that holds it now, and answer from what comes back.";
         continue;
       }
-      if (guarded && !acted && !reply.tool_calls?.length && (CHANGE_CLAIMED.test(reply.content) || PERMISSION_ASKED.test(reply.content) || CHANGE_SPOKEN_OF.test(reply.content))) {
+      if (process.env.HEYMORGAN_DEBUG) console.error("round", JSON.stringify({ guarded, acted, nudges, calls: (reply.tool_calls ?? []).map((call) => call.function.name), said: String(reply.content ?? "").slice(0, 120) }));
+      // Curly apostrophes as straight ones: "I’ve updated" went past a check that knew only "I've".
+      const plainReply = String(reply.content ?? "").replace(/[’‘]/g, "'");
+      if (guarded && !acted && !reply.tool_calls?.length && (CHANGE_CLAIMED.test(plainReply) || PERMISSION_ASKED.test(plainReply) || CHANGE_SPOKEN_OF.test(plainReply))) {
         // It says it did, is doing or is about to do something, or asks leave
         // to, and has called nothing: so nothing was done, and there is
         // nothing for a yes to act on. Once, it is sent back to call the
@@ -2856,7 +2870,7 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
             + " asked for; calling it puts the action forward, and the user is then asked for you.";
           continue;
         }
-        reply.content = "I haven't actually done that yet. Could you ask me again?";
+        reply.content = "I didn't manage to do that: nothing has been changed. Try asking once more, and if it still doesn't go through, it's worth checking that Hermes is up.";
       }
       history.push(reply);
       if (reply.content) {
