@@ -2,7 +2,7 @@
 // The window (and anything else) sends `admin {"op": ..., "args": {...}}`;
 // what it may read and change is exactly what is listed here.
 
-import { spawn, spawnSync } from "node:child_process";
+import { execFile, spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -20,15 +20,39 @@ function put(target, path, value) {
   if (value === undefined) delete at[keys.at(-1)]; else at[keys.at(-1)] = value;
 }
 
+// Which Claude account the Oracle is logged in as, from `claude auth status`
+// under the Oracle's own login. Read in the background and kept a minute:
+// opening the settings must not wait on another program each time.
+let account = { text: "", at: 0, reading: null };
+function oracleAccount(claude) {
+  if (account.text && Date.now() - account.at < 60_000) return Promise.resolve(account.text);
+  account.reading ??= new Promise((resolve) => {
+    execFile(claude || "claude", ["auth", "status"], { env: oracleEnv(), encoding: "utf8", timeout: 8000 }, (error, stdout) => {
+      let text;
+      try {
+        const status = JSON.parse(stdout);
+        text = status.loggedIn ? `${status.email ?? "Logged in"}${status.subscriptionType || status.authMethod ? ` (${status.subscriptionType ?? status.authMethod})` : ""}` : "Not logged in";
+      } catch {
+        text = error?.code === "ENOENT" ? "Claude is not installed" : "Claude did not say";
+      }
+      account = { text, at: Date.now(), reading: null };
+      resolve(text);
+    });
+  });
+  return account.reading;
+}
+
 export function createAdmin(d) {
   const sample = () => `Hello, I'm ${d.cfg.name}. This is how I would sound.`;
 
   const ops = {
     // ------------------------------------------------------------ settings
-    "config.get": () => ({
+    "config.get": async () => ({
       name: d.cfg.name, userName: d.cfg.userName, style: d.cfg.style,
       ollama: { url: d.cfg.ollama.url, model: d.cfg.ollama.model }, embedModel: d.cfg.embedModel,
       oracleModel: d.cfg.oracle.model,
+      // Read where the Oracle runs: on a client, config.get is answered by the server.
+      oracleAccount: await oracleAccount(d.cfg.oracle?.claude),
       wakeWord: d.cfg.wakeWord, interruptWord: d.interruptWord(), followUpSeconds: d.cfg.followUpSeconds,
       endSilenceMs: d.cfg.endSilenceMs, hotkey: d.cfg.hotkey, sight: d.cfg.sight, folders: d.cfg.folders,
       knownVoicesOnly: d.cfg.knownVoicesOnly, voiceThreshold: d.cfg.voiceThreshold, similarFloor: d.cfg.similarFloor,
