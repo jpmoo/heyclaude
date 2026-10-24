@@ -3935,6 +3935,23 @@ function handle(line, socket) {
       const count = Math.min(Number(rest[0]) || 100, logLines.length);
       return reply({ ok: true, lines: logLines.slice(-count) });
     }
+    case "search": {
+      // search <text>: past conversations by what they were about — by meaning
+      // (the query embedded here, on the brain, with the exchanges' own model)
+      // and by the words they share — best first, each with the exchange that
+      // bears on it most. Up to eight, none below a floor of likeness.
+      const query = rest.join(" ").trim();
+      if (!query) return reply({ ok: true, query, results: [] });
+      transcript.searchThreads({ query, limit: 8, live: true }).then((hits) => {
+        const results = hits.filter((hit) => hit.score >= 0.5).map(({ thread, score, items }) => ({
+          id: thread.id, t0: thread.t0, title: thread.title, summary: thread.summary ?? "",
+          when: `${new Date(thread.t0).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}, ${clockOf(thread.t0)}`,
+          score: Number(score.toFixed(2)), said: items[0]?.item.user ?? "",
+        }));
+        reply({ ok: true, query, results });
+      }, (error) => reply({ ok: false, error: error.message }));
+      return;
+    }
     case "conversation": {
       // conversation <id>: its exchanges, as recent gives them.
       const found = conversations().find((entry) => entry.id === rest[0]);
