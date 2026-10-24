@@ -1955,7 +1955,10 @@ const withheld = () => [...mcpAll].flatMap(([server, known]) => (known.tools ?? 
   .map((tool) => tool.name));
 
 async function connectMcpServers() {
-  for (const [name, spec] of Object.entries(cfg.mcpServers)) {
+  // Running locally, the servers this machine keeps for itself (client.json)
+  // are simply more servers; as a client, they are offered to the server instead.
+  const own = ROLE === "local" ? CLIENT.mcpServers ?? {} : {};
+  for (const [name, spec] of Object.entries({ ...own, ...cfg.mcpServers })) {
     const client = new McpClient(name, spec);
     try {
       const offered = await client.start();
@@ -1993,6 +1996,7 @@ async function reconnectMcp() {
   proposals = [];
   try { cfg.mcpServers = JSON.parse(readFileSync(configPath, "utf8")).mcpServers ?? {}; } catch { /* keep the ones we had */ }
   await connectMcpServers();
+  for (const [link, device] of links) offerDeviceTools(link, device);
 }
 
 // A tool that changes something is not run when the model calls it. The call
@@ -4049,7 +4053,8 @@ const admin = createAdmin({
     set({ server, key, device }) {
       if (!server) { rmSync(CLIENT_FILE, { force: true }); return; }
       mkdirSync(dirname(CLIENT_FILE), { recursive: true });
-      writeFileSync(CLIENT_FILE, JSON.stringify({ server, key: key || CLIENT.key, device: device || CLIENT.device || hostname() }, null, 2) + "\n", { mode: 0o600 });
+      // What else the file holds (this machine's MCP servers) is kept.
+      writeFileSync(CLIENT_FILE, JSON.stringify({ ...CLIENT, server, key: key || CLIENT.key, device: device || CLIENT.device || hostname() }, null, 2) + "\n", { mode: 0o600 });
     },
   },
   reminders: {
@@ -4108,7 +4113,11 @@ function askClient(name, args = {}, wait = 60_000) {
   // Looking is done by the device that was asked, never another in some other room; files may come from any.
   const chosen = name === "capture" ? able.find(([link]) => link === turnFrom) : able.find(([link]) => link === turnFrom) ?? able[0];
   if (!chosen) return Promise.reject(new Error(name === "capture" ? `this device has no ${args.source} to look at` : "no connected device has folders it may read"));
-  const [link] = chosen;
+  return askLink(chosen[0], name, args, wait);
+}
+
+// One ability asked of one client, and its answer.
+function askLink(link, name, args = {}, wait = 60_000) {
   return new Promise((resolve, reject) => {
     const id = ++nextAsk;
     const timer = setTimeout(() => { askedOf.delete(id); reject(new Error("the device took too long")); }, wait);
@@ -4118,6 +4127,64 @@ function askClient(name, args = {}, wait = 60_000) {
     });
     link.send(JSON.stringify({ ability: { id, name, args } }));
   });
+}
+
+// ---------------------------------------------------------------- a client's own MCP servers
+//
+// A client may keep MCP servers of its own (client.json's `mcpServers`): ones
+// that can only run where it is — Talaris's, which reads that machine's
+// encrypted store. It offers their tools in its hello; here they become tools
+// like any server's, named `server__tool`, and a call is sent back to the
+// client to run. Changing tools wait for the user's yes, as every other's do.
+
+class DeviceMcp {
+  constructor(link, server) {
+    this.link = link;
+    this.server = server;
+  }
+
+  async call(tool, args) {
+    const result = await askLink(this.link, "mcp", { server: this.server, tool, arguments: args ?? {} });
+    return String(result ?? "");
+  }
+
+  stop() {}
+}
+
+function dropDeviceTools(device) {
+  for (const name of device.servers ?? []) {
+    mcpClients.delete(name);
+    mcpAll.delete(name);
+    mcpTools = mcpTools.filter((tool) => !tool.function.name.startsWith(`${name}__`));
+    for (const change of [...changes]) if (change.startsWith(`${name}__`)) changes.delete(change);
+  }
+  device.servers = [];
+}
+
+function offerDeviceTools(link, device) {
+  dropDeviceTools(device);
+  for (const { server, tools } of Array.isArray(device.tools) ? device.tools : []) {
+    if (typeof server !== "string" || !Array.isArray(tools)) continue;
+    // A name the server's own configuration already uses is the device's by its device's name.
+    let name = server.replace(/[^A-Za-z0-9_-]/g, "-");
+    if (mcpClients.has(name)) name = `${device.name}-${name}`.replace(/[^A-Za-z0-9_-]/g, "-");
+    mcpClients.set(name, new DeviceMcp(link, server));
+    mcpAll.set(name, { tools, device: device.name });
+    for (const tool of tools) {
+      if (!tool?.name) continue;
+      if (!readOnly(tool)) changes.add(`${name}__${tool.name}`);
+      mcpTools.push({
+        type: "function",
+        function: {
+          name: `${name}__${tool.name}`,
+          description: (readOnly(tool) ? "" : "Puts this action forward for the user's yes; call it as soon as they ask for it. ") + (tool.description ?? ""),
+          parameters: tool.inputSchema ?? { type: "object", properties: {} },
+        },
+      });
+    }
+    device.servers.push(name);
+    console.error(`mcp: ${name} offered by ${device.name}, ${tools.length} tools`);
+  }
 }
 
 const access = createAccess(join(process.env.HEYMORGAN_DATA ?? CONFIG_HOME, "access.json"));
@@ -4163,13 +4230,15 @@ function remote(command, wait = 45_000) {
 async function connectHome() {
   const { WebSocket } = await import("ws");
   const link = new WebSocket(homeAddress(CLIENT.server), { handshakeTimeout: 8000 });
-  link.on("open", () => link.send(JSON.stringify({ hello: { key: CLIENT.key, device: CLIENT.device ?? hostname(), kind: CLIENT.kind ?? "laptop", can: abilities() } })));
+  link.on("open", () => link.send(JSON.stringify({ hello: { key: CLIENT.key, device: CLIENT.device ?? hostname(), kind: CLIENT.kind ?? "laptop", can: abilities(), tools: deviceTools() } })));
   link.on("message", (data) => {
     let message;
     try { message = JSON.parse(String(data)); } catch { return; }
     if (message.welcome) {
       homeLink = link;
       console.error(`home: connected to ${CLIENT.server}`);
+      // This machine's MCP servers may have finished starting after the hello went.
+      if (deviceMcp.size) link.send(JSON.stringify({ can: abilities(), tools: deviceTools() }));
       return mirror(message.welcome.config);
     }
     if (message.error) return console.error(`home: ${message.error}`);
@@ -4195,8 +4264,31 @@ async function connectHome() {
   link.on("error", (error) => console.error(`home: could not reach ${CLIENT.server}: ${error.message}`));
 }
 
-// What this client can do for the server: look through what its settings let it, and read its folders.
-const abilities = () => [...cfg.sight.filter(present).map((source) => `sight:${source}`), ...(cfg.folders.length ? ["files"] : [])];
+// What this client can do for the server: look through what its settings let it, read its folders, and run its own MCP servers.
+const abilities = () => [...cfg.sight.filter(present).map((source) => `sight:${source}`), ...(cfg.folders.length ? ["files"] : []),
+  ...(deviceMcp.size ? ["mcp"] : [])];
+
+// This machine's own MCP servers (client.json), started here and offered to the server.
+const deviceMcp = new Map(); // name -> { client, tools }
+const deviceTools = () => [...deviceMcp].map(([server, { tools }]) => ({
+  server, tools: tools.map(({ name, description, inputSchema, annotations }) => ({ name, description, inputSchema, annotations })),
+}));
+
+async function startDeviceMcp() {
+  for (const [name, spec] of Object.entries(CLIENT.mcpServers ?? {})) {
+    const client = new McpClient(name, spec);
+    try {
+      const offered = await client.start();
+      deviceMcp.set(name, { client, tools: offered.filter((tool) => toolAllowed(spec, tool)) });
+      console.error(`mcp: ${name} (this machine's) connected, ${offered.length} tools`);
+    } catch (error) {
+      client.stop();
+      fail(`mcp: ${name} (this machine's) failed to connect: ${error.message}`);
+    }
+  }
+  if (homeLink?.readyState === 1) homeLink.send(JSON.stringify({ can: abilities(), tools: deviceTools() }));
+}
+if (ROLE === "client") startDeviceMcp();
 
 // Something the server asked of this machine, done here and answered.
 async function doForServer(link, { id, name, args = {} }) {
@@ -4208,6 +4300,12 @@ async function doForServer(link, { id, name, args = {} }) {
       return answer({ result: got.text !== undefined ? { text: got.text } : { data: got.toString("base64") } });
     }
     if (name === "files") return answer({ result: await fileTool(String(args.name), args.args ?? {}) });
+    if (name === "mcp") {
+      const held = deviceMcp.get(String(args.server));
+      if (!held) throw new Error(`this device has no MCP server called ${args.server}`);
+      if (!held.tools.some((tool) => tool.name === args.tool)) throw new Error(`${args.tool} is not one this device offers`);
+      return answer({ result: (await held.client.call(String(args.tool), args.arguments ?? {})).slice(0, 8000) });
+    }
     if (name === "allowed") return answer({ result: allowed(String(args.path ?? "")) });
     if (name === "find") return answer({ result: await findByWords(String(args.hint ?? "")) });
     if (name === "read") {
@@ -4364,8 +4462,10 @@ if (ROLE === "server") {
           return link.close(4003, "not allowed");
         }
         clearTimeout(late);
-        device = { name: found.name, kind: String(message.hello.kind ?? "client"), can: Array.isArray(message.hello.can) ? message.hello.can : [] };
+        device = { name: found.name, kind: String(message.hello.kind ?? "client"), can: Array.isArray(message.hello.can) ? message.hello.can : [],
+          tools: message.hello.tools, servers: [] };
         links.set(link, device);
+        if (BRAIN) offerDeviceTools(link, device);
         watchers.add(follower);
         console.error(`clients: ${device.name} connected from ${from}`);
         let saved = {};
@@ -4377,7 +4477,14 @@ if (ROLE === "server") {
         askedOf.delete(message.abilityResult.id);
         return done?.(message.abilityResult);
       }
-      if (Array.isArray(message.can)) { device.can = message.can; return; }
+      if (Array.isArray(message.can)) {
+        device.can = message.can;
+        if (message.tools !== undefined && BRAIN) {
+          device.tools = message.tools;
+          offerDeviceTools(link, device);
+        }
+        return;
+      }
       if (typeof message.command !== "string" || /^\s*watch\b/.test(message.command)) return;
       if (/^\s*(say|type|ask|continue)\b/.test(message.command)) turnFrom = link;
       const answer = { end: (text) => { if (link.readyState === 1) link.send(JSON.stringify({ id: message.id, reply: JSON.parse(text) })); }, write: () => {} };
@@ -4389,7 +4496,10 @@ if (ROLE === "server") {
     link.on("close", () => {
       clearTimeout(late);
       watchers.delete(follower);
-      if (device) console.error(`clients: ${device.name} disconnected`);
+      if (device) {
+        console.error(`clients: ${device.name} disconnected`);
+        dropDeviceTools(device);
+      }
       links.delete(link);
     });
     link.on("error", () => {});

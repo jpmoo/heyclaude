@@ -216,7 +216,11 @@ export function createAdmin(d) {
             error: known?.error ?? null,
             tools: (known?.tools ?? []).map((tool) => ({ name: tool.name, readOnly: readOnly(tool), on: toolAllowed(spec, tool) })),
           };
-        }),
+        }).concat([...d.mcpAll].filter(([, known]) => known.device).map(([name, known]) => ({
+          // Kept on a client, in its client.json: listed, changed there.
+          name, target: `on ${known.device}`, device: known.device, allow: "device", hasKey: false, connected: true, error: null,
+          tools: known.tools.map((tool) => ({ name: tool.name, readOnly: readOnly(tool), on: true })),
+        }))),
       };
     },
     "mcp.add": ({ name, url, key, command }) => {

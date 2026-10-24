@@ -50,7 +50,7 @@ PY
 server_pid=$!
 for _ in $(seq 40); do grep -q "serving clients" "$trial/server.log" 2>/dev/null && break; sleep 0.5; done
 key=$(cd "$root" && HEYMORGAN_ROLE=server HEYMORGAN_DATA="$data" bin/heymorgan access add trial-laptop 2>/dev/null | grep -o 'hc_[A-Za-z0-9_-]*')
-echo "{\"server\": \"127.0.0.1:$port\", \"key\": \"$key\", \"device\": \"trial-laptop\"}" > "$trial/client.json"
+echo "{\"server\": \"127.0.0.1:$port\", \"key\": \"$key\", \"device\": \"trial-laptop\"${CLIENT_MCP:+, \"mcpServers\": $CLIENT_MCP}}" > "$trial/client.json"
 
 # The client, started again whenever it exits to take up new settings.
 export HEYMORGAN_SOCKET="${XDG_RUNTIME_DIR:-/tmp}/hc-client.sock"

@@ -1,10 +1,13 @@
 # Morgan's client protocol
 
-**Version 1.3**, written 2026-10-23 from the code as it stands (`daemon.mjs`,
+**Version 1.4**, written 2026-10-23 from the code as it stands (`daemon.mjs`,
 `admin.mjs`, `env.mjs`, `access.mjs`). It describes what the daemon does, not
 what it was meant to do; where the two differ, or where the behavior would
 surprise someone building on it, a **Note** says so.
 
+- **1.4** (2026-10-24): a client's own MCP servers — `mcpServers` in
+  `client.json`, offered in the hello's `tools` and `can: ["mcp"]`, run on the
+  `mcp` ability; `mcp.list` shows them with `device`.
 - **1.3** (2026-10-23): `search <text>`, past conversations by meaning and
   words, for a launcher. The query is embedded where Morgan's brain is, never
   on the asking machine.
@@ -466,9 +469,13 @@ prefix is the proxy's to strip (see `docs/server-and-satellites.md`).
 - The **device name is the key's**, not the `device` the client sends (which is
   ignored by the server). `kind` is free text, default `client`.
 - `can` lists what the device can do for the server: `sight:<source>` for each
-  source it may look through (`screen`, `clipboard`, `camera`, …), and `files`
-  if it has folders Morgan may read. It may be sent again later on its own:
-  `{ "can": [ … ] }`.
+  source it may look through (`screen`, `clipboard`, `camera`, …), `files`
+  if it has folders Morgan may read, and `mcp` if it runs MCP servers of its
+  own. It may be sent again later on its own: `{ "can": [ … ] }`.
+- `tools` (optional) lists the tools of the device's own MCP servers —
+  `[{ server, tools: [{ name, description, inputSchema, annotations }] }]` —
+  only those its `client.json` allows (see *A client's own MCP servers*). Sent
+  again with `can` when they change: `{ "can": [ … ], "tools": [ … ] }`.
 
 The server answers:
 
@@ -510,6 +517,7 @@ Abilities:
 | `allowed` | `path` | the real path, if it is inside a folder Morgan may read, otherwise `null` |
 | `find` | `hint` | files matching the words |
 | `read` | `path`, `question` | the file's contents, or the part that answers the question |
+| `mcp` | `server`, `tool`, `arguments` | the text the device's MCP server gave back |
 
 `capture` goes only to the device the turn came from (the one that last sent
 `say`, `type`, `ask` or `continue`); if that one cannot look at that source, the
@@ -524,6 +532,27 @@ read-only keys.
 event stream: every client sees every event, including the `user` and
 `assistant` of turns started elsewhere. A client that speaks should speak
 `sentence` events only for turns it started (as the client daemon does).
+
+**A client's own MCP servers.** Some MCP servers can only run where the
+client is — Talaris's (`talaris-core mcp`) reads that machine's encrypted
+store. A client lists them in `client.json`, in the same shape as the server's
+`mcpServers`:
+
+```json
+{ "server": "home-server:8790", "key": "hc_…", "device": "laptop",
+  "mcpServers": { "talaris": { "command": "node", "args": ["…/talaris-core/dist/src/index.js", "mcp"] } } }
+```
+
+The client starts them and offers their tools in its hello (`tools`), only the
+read-only ones unless an entry says `"allow": "all"` (or turns tools on one by
+one with `tools`, as on the server). On the server they are tools like its own,
+named `server__tool`; a name the server already uses becomes
+`<device>-<server>`. A call is sent to that client as the `mcp` ability; a tool
+that changes something waits for the user's yes, as every other's does. They
+go when the client disconnects. `mcp.list` shows them with `device` set and
+`target` "on <device>"; they are changed in the client's `client.json`, not
+with `mcp.add`. Running locally, a `client.json`'s `mcpServers` are simply
+connected as more servers.
 
 **Reconnecting.** A client that loses the link tries again after 3 seconds, or
 after a minute if it was refused (`4003`). Replies still pending are answered
